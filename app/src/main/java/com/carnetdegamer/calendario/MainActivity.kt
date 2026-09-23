@@ -9,13 +9,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
@@ -36,7 +36,6 @@ import androidx.compose.material3.*
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -259,7 +258,16 @@ fun CalendarScreen(vm: CalendarViewModel) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                    AnimatedContent(
+                        targetState = title,
+                        transitionSpec = {
+                            (slideInVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) { it / 2 } + fadeIn(tween(180))) togetherWith
+                                (slideOutVertically(animationSpec = tween(140)) { -it / 3 } + fadeOut(tween(100)))
+                        },
+                        label = "calendar_title"
+                    ) { animatedTitle ->
+                        Text(animatedTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                    }
                     Text(
                         "${date.dayOfMonth} de ${date.month.getDisplayName(TextStyle.FULL, esLocale)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -311,7 +319,7 @@ fun CalendarScreen(vm: CalendarViewModel) {
             date,
             editing,
             onDismiss = { showCreator = false },
-            onSaved = { showCreator = false }
+            onSaved = { }
         )
     }
 }
@@ -640,15 +648,44 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
+    val items = listOf(
+        CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
+        CalendarView.AGENDA to ("Agenda" to Icons.Rounded.ViewAgenda),
+        CalendarView.MONTH to ("Mes" to Icons.Rounded.CalendarMonth),
+        CalendarView.WEEK to ("Semana" to Icons.Rounded.ViewWeek)
+    )
+    val selectedIndex = items.indexOfFirst { it.first == view }.coerceAtLeast(0)
 
-    // Floating pill inspired by Google Photos: it does not touch the screen
-    // edges or the navigation area, and keeps the original taller height.
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
+        val slotWidth = maxWidth / 4f
+        val indicatorWidth = when (view) {
+            CalendarView.AGENDA, CalendarView.WEEK -> 104.dp
+            CalendarView.MONTH -> 82.dp
+            CalendarView.DAY -> 82.dp
+        }
+        val targetOffset = slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
+        val animatedOffset by androidx.compose.animation.core.animateDpAsState(
+            targetValue = targetOffset,
+            animationSpec = spring(
+                dampingRatio = 0.78f,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "nav_indicator_offset"
+        )
+        val animatedWidth by androidx.compose.animation.core.animateDpAsState(
+            targetValue = indicatorWidth,
+            animationSpec = spring(
+                dampingRatio = 0.82f,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "nav_indicator_width"
+        )
+
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -658,97 +695,80 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             shadowElevation = 2.dp,
             shape = RoundedCornerShape(32.dp)
         ) {
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    onView(CalendarView.DAY)
-                }
-                NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    onView(CalendarView.AGENDA)
-                }
-                NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    onView(CalendarView.MONTH)
-                }
-                NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                    onView(CalendarView.WEEK)
+            Box(Modifier.fillMaxSize()) {
+                // One single moving capsule: it physically travels between
+                // the four destinations instead of four independent pills.
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = animatedOffset)
+                        .width(animatedWidth)
+                        .height(48.dp),
+                    shape = RoundedCornerShape(26.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp
+                ) {}
+
+                Row(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 6.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    items.forEachIndexed { index, (destination, data) ->
+                        val (label, icon) = data
+                        val selected = index == selectedIndex
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(26.dp))
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                    onView(destination)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val iconColor = if (selected) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = label,
+                                    tint = iconColor,
+                                    modifier = Modifier.size(27.dp)
+                                )
+                                AnimatedVisibility(
+                                    visible = selected,
+                                    enter = fadeIn(tween(170)) + slideInVertically(tween(190)) { it / 3 },
+                                    exit = fadeOut(tween(100)) + slideOutVertically(tween(120)) { -it / 3 }
+                                ) {
+                                    Row {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            label,
+                                            fontSize = 12.sp,
+                                            lineHeight = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = iconColor,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        }
-    }
-}
-
-@Composable
-fun RowScope.NavItem(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    val indicatorColor = if (selected) {
-        MaterialTheme.colorScheme.secondaryContainer
-    } else {
-        Color.Transparent
-    }
-    val iconColor = if (selected) {
-        MaterialTheme.colorScheme.onSecondaryContainer
-    } else {
-        MaterialTheme.colorScheme.onSurface
-    }
-
-    // Give the selected item more horizontal room so "Agenda" and
-    // "Semana" always fit. Unselected items stay compact and show only
-    // the icon, keeping the Google Photos-style navigation.
-    Box(
-        modifier = Modifier
-            .weight(if (selected) 1.45f else 0.85f)
-            .fillMaxHeight()
-            .padding(horizontal = 2.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        if (selected) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(26.dp))
-                    .background(indicatorColor)
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = label,
-                    tint = iconColor,
-                    modifier = Modifier.size(25.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    label,
-                    fontSize = 12.sp,
-                    lineHeight = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = iconColor,
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
-        } else {
-            Icon(
-                icon,
-                contentDescription = label,
-                tint = iconColor,
-                modifier = Modifier.size(25.dp)
-            )
         }
     }
 }
@@ -778,7 +798,14 @@ fun EventEditorDialog(
     var attendees by remember(editing) { mutableStateOf("") }
     var calendarMenu by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var editorVisible by remember { mutableStateOf(false) }
     val haptic = LocalView.current
+
+    LaunchedEffect(Unit) { editorVisible = true }
+
+    fun closeEditor() {
+        editorVisible = false
+    }
 
     if (showDatePicker) {
         androidx.compose.runtime.key(showDatePicker, startDate) {
@@ -817,16 +844,22 @@ fun EventEditorDialog(
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { closeEditor() },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).safeDrawingPadding().padding(horizontal = 12.dp),
-            shape = RoundedCornerShape(30.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            tonalElevation = 3.dp
+        AnimatedVisibility(
+            visible = editorVisible,
+            enter = fadeIn(tween(160)) + scaleIn(animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow), initialScale = 0.94f),
+            exit = fadeOut(tween(120)) + scaleOut(animationSpec = tween(160, easing = FastOutSlowInEasing), targetScale = 0.94f),
+            modifier = Modifier.fillMaxSize()
         ) {
-            Column(Modifier.fillMaxSize()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).safeDrawingPadding().padding(horizontal = 12.dp),
+                shape = RoundedCornerShape(30.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                tonalElevation = 3.dp
+            ) {
+                Column(Modifier.fillMaxSize()) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -835,7 +868,7 @@ fun EventEditorDialog(
                         Text(if (editing == null) "Nuevo evento" else "Editar evento", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                         Text("Calendario", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "Cerrar") }
+                    IconButton(onClick = { closeEditor() }) { Icon(Icons.Rounded.Close, "Cerrar") }
                 }
 
                 LazyColumn(
@@ -913,10 +946,10 @@ fun EventEditorDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (editing != null) {
-                        TextButton(onClick = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); vm.delete(editing.id); onDismiss() }) { Text("Eliminar") }
+                        TextButton(onClick = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); vm.delete(editing.id); closeEditor() }) { Text("Eliminar") }
                     }
                     Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onDismiss) { Text("Cancelar") }
+                    TextButton(onClick = { closeEditor() }) { Text("Cancelar") }
                     Button(
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -928,13 +961,22 @@ fun EventEditorDialog(
                                 reminder, recurrence.ifBlank { null }, attendees.split(",").map { it.trim() }.filter { it.contains("@") }
                             )
                             if (editing == null) vm.create(draft) else vm.update(editing.id, draft)
+                            editorVisible = false
                             onSaved()
                         },
                         enabled = title.isNotBlank() && calendarId >= 0 && vm.calendars.any { it.id == calendarId && it.writable },
                         shape = RoundedCornerShape(18.dp)
                     ) { Text(if (editing == null) "Crear" else "Guardar") }
                 }
+                }
             }
+        }
+    }
+
+    LaunchedEffect(editorVisible) {
+        if (!editorVisible) {
+            kotlinx.coroutines.delay(170)
+            onDismiss()
         }
     }
 }
