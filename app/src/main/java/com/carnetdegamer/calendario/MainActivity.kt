@@ -127,7 +127,7 @@ class CalendarViewModel : ViewModel() {
         val r = repo ?: return
         ioScope.launch {
             r.insert(draft)
-            refresh(draft.startMillis.toLocalDate())
+            refresh(millisToLocalDate(draft.startMillis, draft.allDay))
         }
     }
 
@@ -135,7 +135,7 @@ class CalendarViewModel : ViewModel() {
         val r = repo ?: return
         ioScope.launch {
             r.update(id, draft)
-            refresh(draft.startMillis.toLocalDate())
+            refresh(millisToLocalDate(draft.startMillis, draft.allDay))
         }
     }
 
@@ -154,6 +154,12 @@ class CalendarViewModel : ViewModel() {
 }
 
 private fun Long.toLocalDate(): LocalDate = millisToLocalDate(this)
+
+private fun eventLocalDate(event: CalendarEvent): LocalDate =
+    millisToLocalDate(event.start, event.allDay)
+
+private fun LocalDate.toDatePickerMillis(): Long =
+    atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
 enum class CalendarView { MONTH, WEEK, DAY, AGENDA }
 
@@ -360,12 +366,12 @@ fun MonthView(
     // Store only the information the grid needs instead of repeatedly
     // filtering the complete event objects for every cell.
     val eventDots = remember(events) {
-        events.groupBy { millisToLocalDate(it.start) }
+        events.groupBy { eventLocalDate(it) }
             .mapValues { (_, dayEvents) -> dayEvents.take(3).map { it.color } }
     }
 
     val selectedDayEvents = remember(events, date) {
-        events.filter { millisToLocalDate(it.start) == date }
+        events.filter { eventLocalDate(it) == date }
     }
 
     Column(
@@ -516,7 +522,7 @@ fun MonthView(
 fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -> Unit, onEvent: (CalendarEvent) -> Unit) {
     val monday = date.minusDays((date.dayOfWeek.value - 1).toLong())
     val haptic = LocalView.current
-    val eventsByDate = remember(events) { events.groupBy { millisToLocalDate(it.start) } }
+    val eventsByDate = remember(events) { events.groupBy { eventLocalDate(it) } }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         (0..6).forEach { i ->
             val d = monday.plusDays(i.toLong())
@@ -543,7 +549,7 @@ fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -
 
 @Composable
 fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
-    val dayEvents = events.filter { millisToLocalDate(it.start) == date }.sortedBy { it.start }
+    val dayEvents = events.filter { eventLocalDate(it) == date }.sortedBy { it.start }
     val allDay = dayEvents.filter { it.allDay }
     val timed = dayEvents.filterNot { it.allDay }
     val zone = ZoneId.systemDefault()
@@ -590,7 +596,7 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
 fun AgendaView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
     val sorted = remember(events, date) {
         events
-            .filter { !millisToLocalDate(it.start).isBefore(date.minusDays(7)) && !millisToLocalDate(it.start).isAfter(date.plusDays(30)) }
+            .filter { !eventLocalDate(it).isBefore(date.minusDays(7)) && !eventLocalDate(it).isAfter(date.plusDays(30)) }
             .sortedBy { it.start }
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
@@ -697,10 +703,14 @@ fun RowScope.NavItem(
         MaterialTheme.colorScheme.onSurface
     }
 
+    // Give the selected item more horizontal room so "Agenda" and
+    // "Semana" always fit. Unselected items stay compact and show only
+    // the icon, keeping the Google Photos-style navigation.
     Box(
         modifier = Modifier
-            .weight(1f)
+            .weight(if (selected) 1.45f else 0.85f)
             .fillMaxHeight()
+            .padding(horizontal = 2.dp)
             .clip(RoundedCornerShape(28.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -708,9 +718,10 @@ fun RowScope.NavItem(
         if (selected) {
             Row(
                 modifier = Modifier
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(26.dp))
                     .background(indicatorColor)
-                    .padding(horizontal = 15.dp, vertical = 10.dp),
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center
             ) {
@@ -720,14 +731,15 @@ fun RowScope.NavItem(
                     tint = iconColor,
                     modifier = Modifier.size(25.dp)
                 )
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(6.dp))
                 Text(
                     label,
                     fontSize = 12.sp,
                     lineHeight = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = iconColor,
-                    maxLines = 1
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         } else {
@@ -757,7 +769,7 @@ fun EventEditorDialog(
     var calendarId by remember(editing, vm.calendars) {
         mutableStateOf(editing?.calendarId ?: vm.calendars.firstOrNull { it.writable }?.id ?: vm.calendars.firstOrNull()?.id ?: -1L)
     }
-    var startDate by remember(editing) { mutableStateOf(editing?.let { millisToLocalDate(it.start) } ?: selectedDate) }
+    var startDate by remember(editing) { mutableStateOf(editing?.let { eventLocalDate(it) } ?: selectedDate) }
     var startHour by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).hour } ?: 10) }
     var startMinute by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).minute } ?: 0) }
     var duration by remember(editing) { mutableStateOf(if (editing != null) ((editing.end - editing.start) / 60_000L).toInt().coerceAtLeast(1) else 60) }
@@ -765,7 +777,44 @@ fun EventEditorDialog(
     var recurrence by remember(editing) { mutableStateOf(editing?.rrule ?: "") }
     var attendees by remember(editing) { mutableStateOf("") }
     var calendarMenu by remember { mutableStateOf(false) }
+    var showDatePicker by remember { mutableStateOf(false) }
     val haptic = LocalView.current
+
+    if (showDatePicker) {
+        androidx.compose.runtime.key(showDatePicker, startDate) {
+            val datePickerState = rememberDatePickerState(
+                initialSelectedDateMillis = startDate.toDatePickerMillis()
+            )
+            DatePickerDialog(
+                onDismissRequest = { showDatePicker = false },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            datePickerState.selectedDateMillis?.let { millis ->
+                                startDate = millisToLocalDate(millis, allDay = true)
+                            }
+                            showDatePicker = false
+                        }
+                    ) { Text("Aceptar") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDatePicker = false }) { Text("Cancelar") }
+                }
+            ) {
+                DatePicker(
+                    state = datePickerState,
+                    showModeToggle = false,
+                    title = { Text("Selecciona una fecha") },
+                    headline = {
+                        Text(
+                            startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", esLocale))
+                                .replaceFirstChar { it.uppercase(esLocale) }
+                        )
+                    }
+                )
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -820,7 +869,27 @@ fun EventEditorDialog(
                         }
                     }
                     item {
-                        OutlinedTextField(startDate.toString(), { runCatching { startDate = LocalDate.parse(it) } }, label = { Text("Fecha (AAAA-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp))
+                        OutlinedButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                showDatePicker = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(18.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+                        ) {
+                            Icon(Icons.Rounded.CalendarMonth, contentDescription = null)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                                Text("Fecha", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                Text(
+                                    startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM 'de' yyyy", esLocale))
+                                        .replaceFirstChar { it.uppercase(esLocale) },
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            Icon(Icons.Rounded.ExpandMore, contentDescription = "Seleccionar fecha")
+                        }
                     }
                     if (!allDay) {
                         item {
@@ -852,8 +921,8 @@ fun EventEditorDialog(
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                             val zone = ZoneId.systemDefault()
-                            val start = if (allDay) startDate.atStartMillis() else startDate.atTime(startHour, startMinute).atZone(zone).toInstant().toEpochMilli()
-                            val end = if (allDay) startDate.atEndMillis() else start + duration * 60_000L
+                            val start = if (allDay) startDate.atAllDayStartMillis() else startDate.atTime(startHour, startMinute).atZone(zone).toInstant().toEpochMilli()
+                            val end = if (allDay) startDate.atAllDayEndMillis() else start + duration * 60_000L
                             val draft = EventDraft(
                                 title.ifBlank { "Sin título" }, calendarId, start, end, allDay, location, description,
                                 reminder, recurrence.ifBlank { null }, attendees.split(",").map { it.trim() }.filter { it.contains("@") }
