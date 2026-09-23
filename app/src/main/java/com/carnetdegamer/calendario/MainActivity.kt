@@ -114,8 +114,8 @@ class CalendarViewModel : ViewModel() {
                 events = loadedEvents
                 eventsByDate = byDate
                 eventDotsByDate = dotsByDate
-                loadedFrom = from.toLocalDate()
-                loadedTo = to.toLocalDate()
+                loadedFrom = millisToLocalDate(from)
+                loadedTo = millisToLocalDate(to)
                 ready = true
             }
         }
