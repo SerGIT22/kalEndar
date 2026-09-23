@@ -62,7 +62,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.carnetdegamer.calendario.data.*
 import java.time.*
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
+import java.time.format.TextStyle as DateTextStyle
 import java.util.Locale
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
@@ -273,9 +273,9 @@ fun CalendarScreen(vm: CalendarViewModel) {
     val haptic = LocalView.current
 
     val title = when (view) {
-        CalendarView.MONTH -> date.month.getDisplayName(TextStyle.FULL, esLocale)
+        CalendarView.MONTH -> date.month.getDisplayName(DateTextStyle.FULL, esLocale)
             .replaceFirstChar { it.uppercase(esLocale) }
-        else -> date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale)
+        else -> date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale)
             .replaceFirstChar { it.uppercase(esLocale) }
     }
 
@@ -313,7 +313,7 @@ fun CalendarScreen(vm: CalendarViewModel) {
                         )
                     }
                     Text(
-                        "${date.dayOfMonth} de ${date.month.getDisplayName(TextStyle.FULL, esLocale)}",
+                        "${date.dayOfMonth} de ${date.month.getDisplayName(DateTextStyle.FULL, esLocale)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -486,7 +486,7 @@ fun MonthView(
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
             }
             Text(
-                "${month.month.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
+                "${month.month.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
                 Modifier.weight(1f),
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp,
@@ -550,7 +550,7 @@ fun MonthView(
 
         Spacer(Modifier.height(6.dp))
         Text(
-            "${date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
+            "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
@@ -651,7 +651,7 @@ fun WeekView(
                     .padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(d.dayOfWeek.getDisplayName(TextStyle.SHORT, esLocale).take(2), fontSize = 11.sp)
+                Text(d.dayOfWeek.getDisplayName(DateTextStyle.SHORT, esLocale).take(2), fontSize = 11.sp)
                 Text(d.dayOfMonth.toString(), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(5.dp))
                 Row {
