@@ -261,7 +261,7 @@ fun CalendarScreen(vm: CalendarViewModel) {
                     AnimatedContent(
                         targetState = title,
                         transitionSpec = {
-                            (slideInVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) { it / 2 } + fadeIn(tween(180))) togetherWith
+                            (slideInVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)) { it / 2 } + fadeIn(tween(140))) togetherWith
                                 (slideOutVertically(animationSpec = tween(140)) { -it / 3 } + fadeOut(tween(100)))
                         },
                         label = "calendar_title"
@@ -663,27 +663,15 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
         val slotWidth = maxWidth / 4f
-        val indicatorWidth = when (view) {
-            CalendarView.AGENDA, CalendarView.WEEK -> 104.dp
-            CalendarView.MONTH -> 82.dp
-            CalendarView.DAY -> 82.dp
-        }
+        // Keep the indicator a fixed size. Animating both its position and width
+        // at the same time made Compose relayout the whole bar and produced the
+        // visible halo/judder on slower frames.
+        val indicatorWidth = 80.dp
         val targetOffset = slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
         val animatedOffset by androidx.compose.animation.core.animateDpAsState(
             targetValue = targetOffset,
-            animationSpec = spring(
-                dampingRatio = 0.78f,
-                stiffness = Spring.StiffnessMediumLow
-            ),
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
             label = "nav_indicator_offset"
-        )
-        val animatedWidth by androidx.compose.animation.core.animateDpAsState(
-            targetValue = indicatorWidth,
-            animationSpec = spring(
-                dampingRatio = 0.82f,
-                stiffness = Spring.StiffnessMediumLow
-            ),
-            label = "nav_indicator_width"
         )
 
         Surface(
@@ -691,24 +679,22 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                 .fillMaxWidth()
                 .height(72.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
-            tonalElevation = 2.dp,
-            shadowElevation = 2.dp,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
             shape = RoundedCornerShape(32.dp)
         ) {
             Box(Modifier.fillMaxSize()) {
-                // One single moving capsule: it physically travels between
-                // the four destinations instead of four independent pills.
-                Surface(
+                // One flat capsule. No elevation/shadow: the outer glow in v10
+                // came from the elevated Surface being animated underneath it.
+                Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .offset(x = animatedOffset)
-                        .width(animatedWidth)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(26.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    tonalElevation = 0.dp,
-                    shadowElevation = 0.dp
-                ) {}
+                        .width(indicatorWidth)
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(26.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                )
 
                 Row(
                     Modifier
@@ -744,7 +730,7 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                                     imageVector = icon,
                                     contentDescription = label,
                                     tint = iconColor,
-                                    modifier = Modifier.size(27.dp)
+                                    modifier = Modifier.size(25.dp)
                                 )
                                 AnimatedVisibility(
                                     visible = selected,
