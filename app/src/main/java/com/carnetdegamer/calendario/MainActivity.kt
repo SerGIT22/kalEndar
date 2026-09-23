@@ -557,7 +557,7 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 14.dp, bottom = 10.dp),
+            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
