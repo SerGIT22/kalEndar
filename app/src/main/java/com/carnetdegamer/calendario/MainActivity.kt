@@ -41,6 +41,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
@@ -647,13 +648,16 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
-    val haptic = LocalView.current
+    val hapticView = LocalView.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+
     val items = listOf(
         CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
         CalendarView.AGENDA to ("Agenda" to Icons.Rounded.ViewAgenda),
         CalendarView.MONTH to ("Mes" to Icons.Rounded.CalendarMonth),
         CalendarView.WEEK to ("Semana" to Icons.Rounded.ViewWeek)
     )
+
     val selectedIndex = items.indexOfFirst { it.first == view }.coerceAtLeast(0)
 
     BoxWithConstraints(
@@ -662,16 +666,23 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             .navigationBarsPadding()
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
-        val slotWidth = maxWidth / 4f
-        // Keep the indicator a fixed size. Animating both its position and width
-        // at the same time made Compose relayout the whole bar and produced the
-        // visible halo/judder on slower frames.
-        val indicatorWidth = 80.dp
-        val targetOffset = slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
-        val animatedOffset by androidx.compose.animation.core.animateDpAsState(
-            targetValue = targetOffset,
-            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-            label = "nav_indicator_offset"
+        val outerHorizontalPadding = 6.dp
+        val indicatorWidth = 96.dp
+        val indicatorHeight = 48.dp
+        val contentWidth = maxWidth - outerHorizontalPadding * 2
+        val slotWidth = contentWidth / 4f
+        val targetOffset = outerHorizontalPadding +
+                slotWidth * selectedIndex +
+                (slotWidth - indicatorWidth) / 2f
+
+        // IMPORTANT: animate only the indicator's pixels. The Row below never
+        // changes its layout, width or visibility, so switching tabs cannot
+        // trigger a cascade of re-layouts or leave ghost capsules behind.
+        val targetOffsetPx = with(density) { targetOffset.toPx() }
+        val animatedOffsetPx by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = targetOffsetPx,
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            label = "nav_indicator_x"
         )
 
         Surface(
@@ -684,315 +695,80 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             shape = RoundedCornerShape(32.dp)
         ) {
             Box(Modifier.fillMaxSize()) {
-                // One flat capsule. No elevation/shadow: the outer glow in v10
-                // came from the elevated Surface being animated underneath it.
+                // One and only one selected capsule. It moves with a GPU-level
+                // translation instead of changing layout during the animation.
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
-                        .offset(x = animatedOffset)
+                        .graphicsLayer { translationX = animatedOffsetPx }
                         .width(indicatorWidth)
-                        .height(48.dp)
+                        .height(indicatorHeight)
                         .clip(RoundedCornerShape(26.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer)
-                )
+                        .background(MaterialTheme.colorScheme.secondaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // The content lives inside the moving capsule. The four
+                    // underlying slots are icon-only, so there is never a
+                    // second animated capsule or an AnimatedVisibility overlap.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                    ) {
+                        val (label, icon) = items[selectedIndex].second
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = label,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(25.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            text = label,
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
 
+                // Fixed layout: every destination is ALWAYS icon-only underneath
+                // the moving indicator. This is what prevents the ghosting seen
+                // in the previous implementation.
                 Row(
-                    Modifier
+                    modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 6.dp, vertical = 6.dp),
+                        .padding(horizontal = outerHorizontalPadding, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     items.forEachIndexed { index, (destination, data) ->
                         val (label, icon) = data
-                        val selected = index == selectedIndex
                         Box(
-                            Modifier
+                            modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .clip(RoundedCornerShape(26.dp))
                                 .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                                    onView(destination)
+                                    if (destination != view) {
+                                        hapticView.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                        onView(destination)
+                                    }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            val iconColor = if (selected) {
-                                MaterialTheme.colorScheme.onSecondaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = icon,
-                                    contentDescription = label,
-                                    tint = iconColor,
-                                    modifier = Modifier.size(25.dp)
-                                )
-                                AnimatedVisibility(
-                                    visible = selected,
-                                    enter = fadeIn(tween(170)) + slideInVertically(tween(190)) { it / 3 },
-                                    exit = fadeOut(tween(100)) + slideOutVertically(tween(120)) { -it / 3 }
-                                ) {
-                                    Row {
-                                        Spacer(Modifier.width(6.dp))
-                                        Text(
-                                            label,
-                                            fontSize = 12.sp,
-                                            lineHeight = 14.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = iconColor,
-                                            maxLines = 1,
-                                            softWrap = false
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun EventEditorDialog(
-    vm: CalendarViewModel,
-    selectedDate: LocalDate,
-    editing: CalendarEvent?,
-    onDismiss: () -> Unit,
-    onSaved: () -> Unit
-) {
-    var title by remember(editing) { mutableStateOf(editing?.title ?: "") }
-    var location by remember(editing) { mutableStateOf(editing?.location ?: "") }
-    var description by remember(editing) { mutableStateOf(editing?.description ?: "") }
-    var allDay by remember(editing) { mutableStateOf(editing?.allDay ?: false) }
-    var calendarId by remember(editing, vm.calendars) {
-        mutableStateOf(editing?.calendarId ?: vm.calendars.firstOrNull { it.writable }?.id ?: vm.calendars.firstOrNull()?.id ?: -1L)
-    }
-    var startDate by remember(editing) { mutableStateOf(editing?.let { eventLocalDate(it) } ?: selectedDate) }
-    var startHour by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).hour } ?: 10) }
-    var startMinute by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).minute } ?: 0) }
-    var duration by remember(editing) { mutableStateOf(if (editing != null) ((editing.end - editing.start) / 60_000L).toInt().coerceAtLeast(1) else 60) }
-    var reminder by remember(editing) { mutableStateOf(10) }
-    var recurrence by remember(editing) { mutableStateOf(editing?.rrule ?: "") }
-    var attendees by remember(editing) { mutableStateOf("") }
-    var calendarMenu by remember { mutableStateOf(false) }
-    var showDatePicker by remember { mutableStateOf(false) }
-    var editorVisible by remember { mutableStateOf(false) }
-    val haptic = LocalView.current
-
-    LaunchedEffect(Unit) { editorVisible = true }
-
-    fun closeEditor() {
-        editorVisible = false
-    }
-
-    if (showDatePicker) {
-        androidx.compose.runtime.key(showDatePicker, startDate) {
-            val datePickerState = rememberDatePickerState(
-                initialSelectedDateMillis = startDate.toDatePickerMillis()
-            )
-            DatePickerDialog(
-                onDismissRequest = { showDatePicker = false },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            datePickerState.selectedDateMillis?.let { millis ->
-                                startDate = millisToLocalDate(millis, allDay = true)
-                            }
-                            showDatePicker = false
-                        }
-                    ) { Text("Aceptar") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDatePicker = false }) { Text("Cancelar") }
-                }
-            ) {
-                DatePicker(
-                    state = datePickerState,
-                    showModeToggle = false,
-                    title = { Text("Selecciona una fecha") },
-                    headline = {
-                        Text(
-                            startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", esLocale))
-                                .replaceFirstChar { it.uppercase(esLocale) }
-                        )
-                    }
-                )
-            }
-        }
-    }
-
-    Dialog(
-        onDismissRequest = { closeEditor() },
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-    ) {
-        AnimatedVisibility(
-            visible = editorVisible,
-            enter = fadeIn(tween(160)) + scaleIn(animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow), initialScale = 0.94f),
-            exit = fadeOut(tween(120)) + scaleOut(animationSpec = tween(160, easing = FastOutSlowInEasing), targetScale = 0.94f),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).safeDrawingPadding().padding(horizontal = 12.dp),
-                shape = RoundedCornerShape(30.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                tonalElevation = 3.dp
-            ) {
-                Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(if (editing == null) "Nuevo evento" else "Editar evento", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text("Calendario", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    IconButton(onClick = { closeEditor() }) { Icon(Icons.Rounded.Close, "Cerrar") }
-                }
-
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    item {
-                        OutlinedTextField(title, { title = it }, label = { Text("Título") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp))
-                    }
-                    item {
-                        Box {
-                            OutlinedButton(onClick = { calendarMenu = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-                                Text(vm.calendars.firstOrNull { it.id == calendarId }?.let { "${it.name} · ${it.account}" } ?: "Calendario", Modifier.weight(1f), textAlign = TextAlign.Start)
-                                Icon(Icons.Rounded.ExpandMore, null)
-                            }
-                            DropdownMenu(expanded = calendarMenu, onDismissRequest = { calendarMenu = false }) {
-                                vm.calendars.filter { it.writable }.forEach {
-                                    DropdownMenuItem(text = { Text(it.name) }, onClick = { calendarId = it.id; calendarMenu = false })
-                                }
-                            }
-                        }
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Todo el día", fontWeight = FontWeight.Medium)
-                                Text("Sin hora de inicio ni fin", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                            }
-                            Switch(checked = allDay, onCheckedChange = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); allDay = it })
-                        }
-                    }
-                    item {
-                        OutlinedButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                                showDatePicker = true
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
-                        ) {
-                            Icon(Icons.Rounded.CalendarMonth, contentDescription = null)
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                                Text("Fecha", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                                Text(
-                                    startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM 'de' yyyy", esLocale))
-                                        .replaceFirstChar { it.uppercase(esLocale) },
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                            Icon(Icons.Rounded.ExpandMore, contentDescription = "Seleccionar fecha")
-                        }
-                    }
-                    if (!allDay) {
-                        item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(startHour.toString().padStart(2, '0'), { startHour = it.toIntOrNull()?.coerceIn(0, 23) ?: startHour }, label = { Text("Hora") }, singleLine = true, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
-                                OutlinedTextField(startMinute.toString().padStart(2, '0'), { startMinute = it.toIntOrNull()?.coerceIn(0, 59) ?: startMinute }, label = { Text("Min") }, singleLine = true, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
-                                OutlinedTextField(duration.toString(), { duration = it.toIntOrNull()?.coerceAtLeast(1) ?: duration }, label = { Text("Duración") }, singleLine = true, modifier = Modifier.weight(1.25f), shape = RoundedCornerShape(18.dp))
-                            }
-                        }
-                    }
-                    item { OutlinedTextField(location, { location = it }, label = { Text("Ubicación") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(description, { description = it }, label = { Text("Descripción") }, minLines = 3, maxLines = 5, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(attendees, { attendees = it }, label = { Text("Invitados · emails separados por coma") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(reminder.toString(), { reminder = it.toIntOrNull()?.coerceAtLeast(0) ?: reminder }, label = { Text("Recordatorio · minutos antes") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(recurrence, { recurrence = it }, label = { Text("Repetición · RRULE opcional") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (editing != null) {
-                        TextButton(onClick = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); vm.delete(editing.id); closeEditor() }) { Text("Eliminar") }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { closeEditor() }) { Text("Cancelar") }
-                    Button(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            val zone = ZoneId.systemDefault()
-                            val start = if (allDay) startDate.atAllDayStartMillis() else startDate.atTime(startHour, startMinute).atZone(zone).toInstant().toEpochMilli()
-                            val end = if (allDay) startDate.atAllDayEndMillis() else start + duration * 60_000L
-                            val draft = EventDraft(
-                                title.ifBlank { "Sin título" }, calendarId, start, end, allDay, location, description,
-                                reminder, recurrence.ifBlank { null }, attendees.split(",").map { it.trim() }.filter { it.contains("@") }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = label,
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(25.dp)
                             )
-                            if (editing == null) vm.create(draft) else vm.update(editing.id, draft)
-                            editorVisible = false
-                            onSaved()
-                        },
-                        enabled = title.isNotBlank() && calendarId >= 0 && vm.calendars.any { it.id == calendarId && it.writable },
-                        shape = RoundedCornerShape(18.dp)
-                    ) { Text(if (editing == null) "Crear" else "Guardar") }
-                }
+                        }
+                    }
                 }
             }
         }
     }
-
-    LaunchedEffect(editorVisible) {
-        if (!editorVisible) {
-            kotlinx.coroutines.delay(170)
-            onDismiss()
-        }
-    }
-}
-
-fun expressiveScheme(dark: Boolean): ColorScheme = if (!dark) {
-    lightColorScheme(
-        primary = Color(0xFF4F64FF),
-        onPrimary = Color.White,
-        primaryContainer = Color(0xFFDCE1FF),
-        onPrimaryContainer = Color(0xFF07144E),
-        secondaryContainer = Color(0xFFDDE2FF),
-        onSecondaryContainer = Color(0xFF101B4F),
-        surface = Color(0xFFFAF8FF),
-        surfaceContainer = Color(0xFFF0EEF6),
-        surfaceContainerHigh = Color(0xFFE9E7EF),
-        surfaceContainerLow = Color(0xFFF5F2FA),
-        background = Color(0xFFFAF8FF)
-    )
-} else {
-    darkColorScheme(
-        primary = Color(0xFFB9C2FF),
-        onPrimary = Color(0xFF17245E),
-        primaryContainer = Color(0xFF3549A0),
-        onPrimaryContainer = Color(0xFFE0E4FF),
-        secondaryContainer = Color(0xFF3E466D),
-        onSecondaryContainer = Color(0xFFE0E5FF),
-        surface = Color(0xFF121318),
-        surfaceContainer = Color(0xFF1D1E24),
-        surfaceContainerHigh = Color(0xFF27282F),
-        surfaceContainerLow = Color(0xFF191A20),
-        background = Color(0xFF121318)
-    )
 }
