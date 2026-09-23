@@ -18,7 +18,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
@@ -754,6 +753,7 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis)
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
+
     Box(
         Modifier
             .fillMaxWidth()
@@ -770,10 +770,22 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                 .padding(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.DAY) }
-            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.AGENDA) }
-            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.MONTH) }
-            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.WEEK) }
+            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.DAY)
+            }
+            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.AGENDA)
+            }
+            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.MONTH)
+            }
+            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.WEEK)
+            }
         }
     }
 }
@@ -785,74 +797,76 @@ fun RowScope.NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    // The selected item gets a little more room so long labels such as
-    // "Semana" never get clipped. Both the old and new item animate their
-    // width, making the selected capsule slide smoothly between tabs.
-    val animatedWeight by animateFloatAsState(
-        targetValue = if (selected) 1.35f else 0.8833f,
-        animationSpec = spring(
-            dampingRatio = 0.82f,
-            stiffness = 700f
-        ),
-        label = "nav_weight_$label"
-    )
-
+    // Keep every tab at a stable width. Only the selected capsule moves;
+    // this avoids continuously remeasuring the whole Row during the animation.
     Box(
         Modifier
-            .weight(animatedWeight)
+            .weight(1f)
             .fillMaxHeight()
             .clip(RoundedCornerShape(30.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedContent(
-            targetState = selected,
-            transitionSpec = {
-                (fadeIn(tween(130)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
-                    (fadeOut(tween(90)) + scaleOut(tween(110), targetScale = 0.92f))
-            },
-            label = "nav_content_$label"
-        ) { isSelected ->
-            if (isSelected) {
-                Row(
-                    Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        icon,
-                        null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        label,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-            } else {
+        AnimatedVisibility(
+            visible = selected,
+            enter = fadeIn(tween(140)) + scaleIn(
+                tween(180),
+                initialScale = 0.92f
+            ),
+            exit = fadeOut(tween(100)) + scaleOut(
+                tween(120),
+                targetScale = 0.92f
+            )
+        ) {
+            Row(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
                 Icon(
                     icon,
+                    null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
                     label,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(25.dp)
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
+        }
+
+        AnimatedVisibility(
+            visible = !selected,
+            enter = fadeIn(tween(130)) + scaleIn(
+                tween(160),
+                initialScale = 0.94f
+            ),
+            exit = fadeOut(tween(90)) + scaleOut(
+                tween(110),
+                targetScale = 0.94f
+            )
+        ) {
+            Icon(
+                icon,
+                label,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(25.dp)
+            )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EventEditorDialog(
     vm: CalendarViewModel,
