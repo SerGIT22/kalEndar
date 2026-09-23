@@ -9,7 +9,6 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZoneOffset
 
-
 data class CalendarInfo(val id: Long, val name: String, val account: String, val color: Int, val writable: Boolean)
 data class CalendarEvent(
     val id: Long,
@@ -23,7 +22,6 @@ data class CalendarEvent(
     val color: Int,
     val rrule: String? = null
 )
-
 data class EventDraft(
     val title: String,
     val calendarId: Long,
@@ -48,9 +46,13 @@ class CalendarRepository(private val resolver: ContentResolver) {
             CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
             CalendarContract.Calendars.VISIBLE
         )
-        resolver.query(CalendarContract.Calendars.CONTENT_URI, projection,
-            "${CalendarContract.Calendars.VISIBLE}=1", null,
-            "${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME} ASC")?.use { c ->
+        resolver.query(
+            CalendarContract.Calendars.CONTENT_URI,
+            projection,
+            "${CalendarContract.Calendars.VISIBLE}=1",
+            null,
+            "${CalendarContract.Calendars.CALENDAR_DISPLAY_NAME} ASC"
+        )?.use { c ->
             val id = c.getColumnIndexOrThrow(CalendarContract.Calendars._ID)
             val name = c.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME)
             val account = c.getColumnIndexOrThrow(CalendarContract.Calendars.ACCOUNT_NAME)
@@ -58,7 +60,13 @@ class CalendarRepository(private val resolver: ContentResolver) {
             val access = c.getColumnIndexOrThrow(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL)
             while (c.moveToNext()) {
                 val level = c.getInt(access)
-                result += CalendarInfo(c.getLong(id), c.getString(name), c.getString(account), c.getInt(color), level >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR)
+                result += CalendarInfo(
+                    c.getLong(id),
+                    c.getString(name),
+                    c.getString(account),
+                    c.getInt(color),
+                    level >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR
+                )
             }
         }
         return result
@@ -151,7 +159,9 @@ class CalendarRepository(private val resolver: ContentResolver) {
         resolver.update(uri, values, null, null)
         resolver.delete(CalendarContract.Reminders.CONTENT_URI, "${CalendarContract.Reminders.EVENT_ID}=?", arrayOf(eventId.toString()))
         if (draft.reminderMinutes >= 0) resolver.insert(CalendarContract.Reminders.CONTENT_URI, ContentValues().apply {
-            put(CalendarContract.Reminders.EVENT_ID, eventId); put(CalendarContract.Reminders.MINUTES, draft.reminderMinutes); put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+            put(CalendarContract.Reminders.EVENT_ID, eventId)
+            put(CalendarContract.Reminders.MINUTES, draft.reminderMinutes)
+            put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
         })
     }
 
@@ -162,4 +172,14 @@ class CalendarRepository(private val resolver: ContentResolver) {
 
 fun LocalDate.atStartMillis(): Long = atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 fun LocalDate.atEndMillis(): Long = plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-fun millisToLocalDate(millis: Long): LocalDate = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+
+// All-day events are stored by Android CalendarProvider in UTC. Keep their
+// calendar date in UTC so Spain/other positive-offset zones don't move them
+// to the previous local day when reading them back.
+fun LocalDate.atAllDayStartMillis(): Long = atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+fun LocalDate.atAllDayEndMillis(): Long = plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+fun millisToLocalDate(millis: Long, allDay: Boolean = false): LocalDate =
+    Instant.ofEpochMilli(millis)
+        .atZone(if (allDay) ZoneOffset.UTC else ZoneId.systemDefault())
+        .toLocalDate()
