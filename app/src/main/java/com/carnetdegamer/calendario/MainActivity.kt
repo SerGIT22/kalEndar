@@ -284,19 +284,19 @@ fun CalendarScreen(vm: CalendarViewModel) {
     }
 
     // Separate FAB: deliberately outside the bottom navigation, matching the requested Pixel/Material Expressive layout.
-    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 18.dp, bottom = 78.dp), contentAlignment = Alignment.BottomEnd) {
+    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 16.dp, bottom = 66.dp), contentAlignment = Alignment.BottomEnd) {
         FloatingActionButton(
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                 editing = null
                 showCreator = true
             },
-            modifier = Modifier.size(58.dp),
-            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.size(52.dp),
+            shape = RoundedCornerShape(17.dp),
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
             elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 5.dp, pressedElevation = 8.dp)
-        ) { Icon(Icons.Rounded.Add, "Nuevo evento", modifier = Modifier.size(28.dp)) }
+        ) { Icon(Icons.Rounded.Add, "Nuevo evento", modifier = Modifier.size(24.dp)) }
     }
 
     if (showCreator) {
@@ -318,38 +318,55 @@ fun ViewSwitcher(
     events: List<CalendarEvent>,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    AnimatedContent(
-        targetState = view,
-        transitionSpec = {
-            val forward = targetState.ordinal > initialState.ordinal
-            val enterOffset = if (forward) { { width: Int -> width / 10 } } else { { width: Int -> -width / 10 } }
-            val exitOffset = if (forward) { { width: Int -> -width / 12 } } else { { width: Int -> width / 12 } }
-
-            (slideInHorizontally(
-                initialOffsetX = enterOffset,
-                animationSpec = tween(300, easing = FastOutSlowInEasing)
-            ) + fadeIn(tween(220, easing = FastOutSlowInEasing))) togetherWith
-                (slideOutHorizontally(
-                    targetOffsetX = exitOffset,
-                    animationSpec = tween(240, easing = FastOutSlowInEasing)
-                ) + fadeOut(tween(150)))
-        },
-        label = "view"
-    ) { v ->
-        when (v) {
-            CalendarView.MONTH -> MonthView(date, events, onDate, onEvent)
-            CalendarView.WEEK -> WeekView(date, events, onDate, onEvent)
-            CalendarView.DAY -> DayView(date, events, onEvent)
-            CalendarView.AGENDA -> AgendaView(date, events, onEvent)
-        }
+    // Keep view switching synchronous. AnimatedContent composes both the old
+    // and new screen at the same time, which is especially expensive for the
+    // month grid. The calendar should feel immediate rather than animated at
+    // the cost of dropped frames.
+    when (view) {
+        CalendarView.MONTH -> MonthView(date, events, onDate, onEvent)
+        CalendarView.WEEK -> WeekView(date, events, onDate, onEvent)
+        CalendarView.DAY -> DayView(date, events, onEvent)
+        CalendarView.AGENDA -> AgendaView(date, events, onEvent)
     }
 }
 
 @Composable
-fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -> Unit, onEvent: (CalendarEvent) -> Unit) {
+fun MonthView(
+    date: LocalDate,
+    events: List<CalendarEvent>,
+    onDate: (LocalDate) -> Unit,
+    onEvent: (CalendarEvent) -> Unit
+) {
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val haptic = LocalView.current
-    val eventsByDate = remember(events) { events.groupBy { millisToLocalDate(it.start) } }
+
+    // Pre-calculate the 42 cells only when the month changes. There is no
+    // AnimatedContent here: it used to keep two complete month grids alive
+    // during the transition and was the main source of stutter on this screen.
+    val days = remember(month) {
+        val first = month.withDayOfMonth(1)
+        val leading = first.dayOfWeek.value - 1
+        buildList {
+            repeat(leading) { index ->
+                add(first.minusDays((leading - index).toLong()))
+            }
+            for (day in 1..month.lengthOfMonth()) {
+                add(month.withDayOfMonth(day))
+            }
+            while (size < 42) add(last().plusDays(1))
+        }
+    }
+
+    // Store only the information the grid needs instead of repeatedly
+    // filtering the complete event objects for every cell.
+    val eventDots = remember(events) {
+        events.groupBy { millisToLocalDate(it.start) }
+            .mapValues { (_, dayEvents) -> dayEvents.take(3).map { it.color } }
+    }
+
+    val selectedDayEvents = remember(events, date) {
+        events.filter { millisToLocalDate(it.start) == date }
+    }
 
     Column(
         Modifier
@@ -357,9 +374,7 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
             .pointerInput(Unit) {
                 var dragTotal = 0f
                 detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, dragAmount ->
-                        dragTotal += dragAmount
-                    },
+                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
                     onDragEnd = {
                         when {
                             dragTotal > 70f -> {
@@ -380,133 +395,102 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
             }
     ) {
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                month = month.minusMonths(1)
-                onDate(month)
-            }) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior")
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    month = month.minusMonths(1)
+                    onDate(month)
+                },
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
             }
 
             Text(
                 "${month.month.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
                 Modifier.weight(1f),
                 fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
+                fontSize = 17.sp,
                 textAlign = TextAlign.Center
             )
 
-            IconButton(onClick = {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                month = month.plusMonths(1)
-                onDate(month)
-            }) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente")
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    month = month.plusMonths(1)
+                    onDate(month)
+                },
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", modifier = Modifier.size(20.dp))
             }
         }
 
-        Row(Modifier.fillMaxWidth()) {
-            listOf("L", "M", "X", "J", "V", "S", "D").forEach {
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 3.dp)) {
+            listOf("L", "M", "X", "J", "V", "S", "D").forEach { dayName ->
                 Text(
-                    it,
+                    dayName,
                     Modifier.weight(1f),
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp
+                    fontSize = 11.sp
                 )
             }
         }
 
-        Spacer(Modifier.height(4.dp))
+        // Fixed 6 x 7 grid. No lazy layout and no animated double-buffering:
+        // 42 lightweight cells are cheaper and much more stable here.
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            days.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth().height(45.dp)) {
+                    week.forEach { day ->
+                        val selected = day == date
+                        val colors = eventDots[day].orEmpty()
 
-        // Only the grid content is animated. The header and surrounding
-        // layout remain stable, which prevents the large re-layout that was
-        // causing the month view to feel laggy.
-        AnimatedContent(
-            targetState = month,
-            transitionSpec = {
-                (fadeIn(tween(130, easing = FastOutSlowInEasing)) +
-                    slideInHorizontally(
-                        initialOffsetX = { 18 },
-                        animationSpec = tween(170, easing = FastOutSlowInEasing)
-                    )) togetherWith
-                    (fadeOut(tween(90, easing = FastOutSlowInEasing)))
-            },
-            label = "monthGrid"
-        ) { animatedMonth ->
-            val weekRows = remember(animatedMonth) {
-                val first = animatedMonth.withDayOfMonth(1)
-                val leading = first.dayOfWeek.value - 1
-                buildList {
-                    repeat(leading) { index ->
-                        add(first.minusDays((leading - index).toLong()))
-                    }
-                    for (day in 1..animatedMonth.lengthOfMonth()) {
-                        add(animatedMonth.withDayOfMonth(day))
-                    }
-                    while (size < 42) add(last().plusDays(1))
-                }.chunked(7)
-            }
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                weekRows.forEach { week ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        week.forEach { day ->
-                            val selected = day == date
-                            val dayEvents = eventsByDate[day].orEmpty()
-
-                            Column(
-                                Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .padding(horizontal = 2.dp)
-                                    .clip(RoundedCornerShape(15.dp))
-                                    .clickable {
-                                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                        onDate(day)
-                                    }
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primaryContainer
-                                        else Color.Transparent
-                                    )
-                                    .padding(vertical = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Top
-                            ) {
-                                Text(
-                                    day.dayOfMonth.toString(),
-                                    color = when {
-                                        selected -> MaterialTheme.colorScheme.onPrimaryContainer
-                                        day.month != month.month -> MaterialTheme.colorScheme.outline
-                                        else -> MaterialTheme.colorScheme.onSurface
-                                    },
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                    fontSize = 14.sp
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(horizontal = 1.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                                    else Color.Transparent
                                 )
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onDate(day)
+                                }
+                                .padding(top = 3.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                day.dayOfMonth.toString(),
+                                color = when {
+                                    selected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    day.month != month.month -> MaterialTheme.colorScheme.outline
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                },
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 13.sp
+                            )
 
-                                Row(
-                                    Modifier.height(9.dp),
-                                    horizontalArrangement = Arrangement.Center
-                                ) {
-                                    dayEvents.take(3).forEach { event ->
-                                        Box(
-                                            Modifier
-                                                .padding(horizontal = 1.dp)
-                                                .size(4.dp)
-                                                .clip(CircleShape)
-                                                .background(Color(event.color))
-                                        )
-                                    }
+                            Row(
+                                Modifier.height(8.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                colors.forEach { color ->
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 1.dp)
+                                            .size(4.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(color))
+                                    )
                                 }
                             }
                         }
@@ -515,7 +499,7 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
         Text(
             "${date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
@@ -523,8 +507,8 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
             fontWeight = FontWeight.Bold
         )
 
-        Spacer(Modifier.height(6.dp))
-        EventList(events.filter { millisToLocalDate(it.start) == date }, onEvent)
+        Spacer(Modifier.height(5.dp))
+        EventList(selectedDayEvents, onEvent)
     }
 }
 
@@ -651,22 +635,20 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
 
-    // Full-width navigation surface. It deliberately does not reserve any
-    // space for the independent FAB.
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .height(70.dp),
+            .height(56.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 2.dp,
+        tonalElevation = 1.dp,
         shadowElevation = 0.dp,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
     ) {
         Row(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 6.dp, vertical = 5.dp),
+                .padding(horizontal = 4.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
@@ -696,52 +678,40 @@ fun RowScope.NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    val indicatorColor by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "navIndicatorColor"
-    )
-    val iconColor by animateColorAsState(
-        targetValue = if (selected) {
-            MaterialTheme.colorScheme.onSecondaryContainer
-        } else {
-            // onSurface is intentionally used instead of a very muted
-            // onSurfaceVariant so labels remain legible in dark dynamic themes.
-            MaterialTheme.colorScheme.onSurface
-        },
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "navIconColor"
-    )
+    val indicatorColor = if (selected) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        Color.Transparent
+    }
+    val iconColor = if (selected) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
 
     Column(
         Modifier
             .weight(1f)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 2.dp, vertical = 1.dp),
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Box(
             modifier = Modifier
-                .height(28.dp)
-                .fillMaxWidth(0.58f)
-                .clip(RoundedCornerShape(15.dp))
+                .height(23.dp)
+                .fillMaxWidth(0.48f)
+                .clip(RoundedCornerShape(12.dp))
                 .background(indicatorColor),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                icon,
-                null,
-                tint = iconColor,
-                modifier = Modifier.size(20.dp)
-            )
+            Icon(icon, null, tint = iconColor, modifier = Modifier.size(18.dp))
         }
-
         Text(
             label,
-            fontSize = 11.sp,
+            fontSize = 9.sp,
+            lineHeight = 10.sp,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
             color = iconColor,
             maxLines = 1
