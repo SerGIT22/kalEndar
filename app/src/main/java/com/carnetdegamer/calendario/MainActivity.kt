@@ -650,6 +650,7 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val hapticView = LocalView.current
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
 
     val items = listOf(
         CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
@@ -666,22 +667,19 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             .navigationBarsPadding()
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
-        val outerHorizontalPadding = 6.dp
-        val indicatorWidth = 96.dp
+        val outerPadding = 6.dp
+        val indicatorWidth = 100.dp
         val indicatorHeight = 48.dp
-        val contentWidth = maxWidth - outerHorizontalPadding * 2
+        val contentWidth = maxWidth - outerPadding * 2
         val slotWidth = contentWidth / 4f
-        val targetOffset = outerHorizontalPadding +
-                slotWidth * selectedIndex +
-                (slotWidth - indicatorWidth) / 2f
-
-        // IMPORTANT: animate only the indicator's pixels. The Row below never
-        // changes its layout, width or visibility, so switching tabs cannot
-        // trigger a cascade of re-layouts or leave ghost capsules behind.
+        val targetOffset = outerPadding + slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
         val targetOffsetPx = with(density) { targetOffset.toPx() }
+
+        // Solo se mueve UNA capa. No se cambia el tamaño ni el layout de ningún
+        // elemento durante la animación.
         val animatedOffsetPx by androidx.compose.animation.core.animateFloatAsState(
             targetValue = targetOffsetPx,
-            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            animationSpec = tween(190, easing = FastOutSlowInEasing),
             label = "nav_indicator_x"
         )
 
@@ -692,11 +690,10 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             color = MaterialTheme.colorScheme.surfaceContainer,
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
-            shape = RoundedCornerShape(32.dp)
+            shape = RoundedCornerShape(36.dp)
         ) {
             Box(Modifier.fillMaxSize()) {
-                // One and only one selected capsule. It moves with a GPU-level
-                // translation instead of changing layout during the animation.
+                // Cápsula única. Se desplaza por GPU y no deja estados anteriores.
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
@@ -707,20 +704,19 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                         .background(MaterialTheme.colorScheme.secondaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
-                    // The content lives inside the moving capsule. The four
-                    // underlying slots are icon-only, so there is never a
-                    // second animated capsule or an AnimatedVisibility overlap.
+                    val (label, icon) = items[selectedIndex].second
                     Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                        horizontalArrangement = Arrangement.Center
                     ) {
-                        val (label, icon) = items[selectedIndex].second
                         Icon(
                             imageVector = icon,
                             contentDescription = label,
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(25.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                         Spacer(Modifier.width(5.dp))
                         Text(
@@ -735,13 +731,13 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                     }
                 }
 
-                // Fixed layout: every destination is ALWAYS icon-only underneath
-                // the moving indicator. This is what prevents the ghosting seen
-                // in the previous implementation.
+                // Los cuatro huecos tienen SIEMPRE el mismo layout. No usamos
+                // AnimatedVisibility ni ripple: ambos provocaban los halos que
+                // se veían al cambiar rápidamente entre secciones.
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = outerHorizontalPadding, vertical = 6.dp),
+                        .padding(horizontal = outerPadding, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     items.forEachIndexed { index, (destination, data) ->
@@ -751,7 +747,10 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .clip(RoundedCornerShape(26.dp))
-                                .clickable {
+                                .clickable(
+                                    interactionSource = interactionSource,
+                                    indication = null
+                                ) {
                                     if (destination != view) {
                                         hapticView.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                                         onView(destination)
@@ -759,11 +758,17 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                                 },
                             contentAlignment = Alignment.Center
                         ) {
+                            // El icono situado debajo de la cápsula seleccionada
+                            // queda oculto para que nunca aparezca duplicado.
                             Icon(
                                 imageVector = icon,
                                 contentDescription = label,
                                 tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(25.dp)
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .graphicsLayer {
+                                        alpha = if (index == selectedIndex) 0f else 1f
+                                    }
                             )
                         }
                     }
