@@ -797,8 +797,8 @@ fun RowScope.NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    // Keep every tab at a stable width. Only the selected capsule moves;
-    // this avoids continuously remeasuring the whole Row during the animation.
+    // Stable layout: the four tabs keep the same width. Only their content
+    // changes, so switching tabs does not force the whole Row to remeasure.
     Box(
         Modifier
             .weight(1f)
@@ -807,62 +807,55 @@ fun RowScope.NavItem(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        AnimatedVisibility(
-            visible = selected,
-            enter = fadeIn(tween(140)) + scaleIn(
-                tween(180),
-                initialScale = 0.92f
-            ),
-            exit = fadeOut(tween(100)) + scaleOut(
-                tween(120),
-                targetScale = 0.92f
-            )
-        ) {
-            Row(
-                Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
+        AnimatedContent(
+            targetState = selected,
+            transitionSpec = {
+                (fadeIn(tween(140)) + scaleIn(
+                    tween(180),
+                    initialScale = 0.92f
+                )) togetherWith
+                    (fadeOut(tween(100)) + scaleOut(
+                        tween(120),
+                        targetScale = 0.92f
+                    ))
+            },
+            label = "nav_content_$label"
+        ) { isSelected ->
+            if (isSelected) {
+                Row(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        icon,
+                        null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            } else {
                 Icon(
                     icon,
-                    null,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
                     label,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    maxLines = 1,
-                    softWrap = false
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(25.dp)
                 )
             }
-        }
-
-        AnimatedVisibility(
-            visible = !selected,
-            enter = fadeIn(tween(130)) + scaleIn(
-                tween(160),
-                initialScale = 0.94f
-            ),
-            exit = fadeOut(tween(90)) + scaleOut(
-                tween(110),
-                targetScale = 0.94f
-            )
-        ) {
-            Icon(
-                icon,
-                label,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(25.dp)
-            )
         }
     }
 }
