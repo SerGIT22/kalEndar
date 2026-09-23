@@ -84,6 +84,13 @@ class CalendarViewModel : ViewModel() {
 
     var calendars by mutableStateOf<List<CalendarInfo>>(emptyList()); private set
     var events by mutableStateOf<List<CalendarEvent>>(emptyList()); private set
+
+    // Pre-index events off the UI thread. The Month view only needs events
+    // grouped by day; doing groupBy() inside a Composable was causing the
+    // complete event list to be processed on every entry/recomposition.
+    var eventsByDate by mutableStateOf<Map<LocalDate, List<CalendarEvent>>>(emptyMap()); private set
+    var eventDotsByDate by mutableStateOf<Map<LocalDate, List<Int>>>(emptyMap()); private set
+
     var ready by mutableStateOf(false); private set
 
     // CalendarProvider queries can be slow, especially with Google Calendar.
@@ -103,9 +110,23 @@ class CalendarViewModel : ViewModel() {
             val to = focus.plusMonths(6).withDayOfMonth(1).atStartMillis()
             val loadedCalendars = r.calendars()
             val loadedEvents = r.events(from, to)
+
+            // This work stays on Dispatchers.IO. Compose receives already
+            // indexed data, so entering Month never has to scan every event.
+            val byDate = loadedEvents.groupBy { eventLocalDate(it) }
+            val dotsByDate = byDate.mapValues { (_, dayEvents) ->
+                dayEvents.asSequence()
+                    .map { it.color }
+                    .distinct()
+                    .take(3)
+                    .toList()
+            }
+
             withContext(Dispatchers.Main.immediate) {
                 calendars = loadedCalendars
                 events = loadedEvents
+                eventsByDate = byDate
+                eventDotsByDate = dotsByDate
                 loadedFrom = from.toLocalDate()
                 loadedTo = to.toLocalDate()
                 ready = true
@@ -293,6 +314,8 @@ fun CalendarScreen(vm: CalendarViewModel) {
                     vm.ensureRange(it)
                 },
                 vm.events,
+                vm.eventsByDate,
+                vm.eventDotsByDate,
                 onEvent = { editing = it; showCreator = true }
             )
         }
@@ -331,6 +354,8 @@ fun ViewSwitcher(
     date: LocalDate,
     onDate: (LocalDate) -> Unit,
     events: List<CalendarEvent>,
+    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
+    eventDotsByDate: Map<LocalDate, List<Int>>,
     onEvent: (CalendarEvent) -> Unit
 ) {
     // Keep view switching synchronous. AnimatedContent composes both the old
@@ -338,7 +363,7 @@ fun ViewSwitcher(
     // month grid. The calendar should feel immediate rather than animated at
     // the cost of dropped frames.
     when (view) {
-        CalendarView.MONTH -> MonthView(date, events, onDate, onEvent)
+        CalendarView.MONTH -> MonthView(date, eventsByDate, eventDotsByDate, onDate, onEvent)
         CalendarView.WEEK -> WeekView(date, events, onDate, onEvent)
         CalendarView.DAY -> DayView(date, events, onEvent)
         CalendarView.AGENDA -> AgendaView(date, events, onEvent)
@@ -348,7 +373,8 @@ fun ViewSwitcher(
 @Composable
 fun MonthView(
     date: LocalDate,
-    events: List<CalendarEvent>,
+    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
+    eventDotsByDate: Map<LocalDate, List<Int>>,
     onDate: (LocalDate) -> Unit,
     onEvent: (CalendarEvent) -> Unit
 ) {
@@ -372,16 +398,10 @@ fun MonthView(
         }
     }
 
-    // Store only the information the grid needs instead of repeatedly
-    // filtering the complete event objects for every cell.
-    val eventDots = remember(events) {
-        events.groupBy { eventLocalDate(it) }
-            .mapValues { (_, dayEvents) -> dayEvents.take(3).map { it.color } }
-    }
-
-    val selectedDayEvents = remember(events, date) {
-        events.filter { eventLocalDate(it) == date }
-    }
+    // All indexing was already done on Dispatchers.IO by the ViewModel.
+    // Month only performs O(1) map lookups while it composes its 42 cells.
+    val eventDots = eventDotsByDate
+    val selectedDayEvents = eventsByDate[date].orEmpty()
 
     Column(
         Modifier
