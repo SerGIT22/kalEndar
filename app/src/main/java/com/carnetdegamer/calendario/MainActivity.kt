@@ -9,12 +9,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -31,6 +36,11 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -166,7 +176,16 @@ fun CalendarApp(vm: CalendarViewModel = viewModel()) {
         if (hasPermission) vm.attach(CalendarRepository(context.contentResolver))
     }
 
-    MaterialTheme(colorScheme = expressiveScheme()) {
+    val darkTheme = isSystemInDarkTheme()
+    val colorScheme = remember(darkTheme) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        } else {
+            expressiveScheme(darkTheme)
+        }
+    }
+
+    MaterialTheme(colorScheme = colorScheme) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             if (!hasPermission) PermissionScreen {
                 launcher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
@@ -305,8 +324,18 @@ fun ViewSwitcher(
     AnimatedContent(
         targetState = view,
         transitionSpec = {
-            (fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.985f, animationSpec = tween(180))) togetherWith
-                (fadeOut(animationSpec = tween(120)) + scaleOut(targetScale = 1.015f, animationSpec = tween(120)))
+            val forward = targetState.ordinal > initialState.ordinal
+            val enterOffset = if (forward) { { width: Int -> width / 10 } } else { { width: Int -> -width / 10 } }
+            val exitOffset = if (forward) { { width: Int -> -width / 12 } } else { { width: Int -> width / 12 } }
+
+            (slideInHorizontally(
+                initialOffsetX = enterOffset,
+                animationSpec = tween(300, easing = FastOutSlowInEasing)
+            ) + fadeIn(tween(220, easing = FastOutSlowInEasing))) togetherWith
+                (slideOutHorizontally(
+                    targetOffsetX = exitOffset,
+                    animationSpec = tween(240, easing = FastOutSlowInEasing)
+                ) + fadeOut(tween(150)))
         },
         label = "view"
     ) { v ->
@@ -553,39 +582,89 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
-    Box(
-        Modifier
+
+    // Full-width navigation surface. The FAB is independent and no longer
+    // reserves a phantom slot inside the navigation bar.
+    Surface(
+        modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
-        contentAlignment = Alignment.Center
+            .height(82.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 3.dp,
+        shadowElevation = 0.dp,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
         Row(
             Modifier
-                .fillMaxWidth()
-                .height(68.dp)
-                .clip(RoundedCornerShape(32.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(6.dp),
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.DAY) }
-            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.AGENDA) }
-            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.MONTH) }
-            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.WEEK) }
+            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.DAY)
+            }
+            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.AGENDA)
+            }
+            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.MONTH)
+            }
+            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onView(CalendarView.WEEK)
+            }
         }
     }
 }
 
 @Composable
-fun RowScope.NavItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean, onClick: () -> Unit) {
+fun RowScope.NavItem(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val indicatorColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "navIndicatorColor"
+    )
+    val iconColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "navIconColor"
+    )
+
     Column(
-        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(24.dp)).clickable { onClick() }.padding(vertical = 5.dp),
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 3.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(icon, null, tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(label, fontSize = 10.sp, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        Box(
+            modifier = Modifier
+                .height(32.dp)
+                .fillMaxWidth(0.72f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(indicatorColor),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = iconColor)
+        }
+        Text(
+            label,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = iconColor
+        )
     }
 }
 
@@ -718,15 +797,32 @@ fun EventEditorDialog(
     }
 }
 
-fun expressiveScheme(): ColorScheme = lightColorScheme(
-    primary = Color(0xFF246BFE),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD9E2FF),
-    onPrimaryContainer = Color(0xFF001A41),
-    secondaryContainer = Color(0xFFE0E2EC),
-    surface = Color(0xFFF9F9FF),
-    surfaceContainer = Color(0xFFEFEFF6),
-    surfaceContainerHigh = Color(0xFFE8E8F0),
-    surfaceContainerLow = Color(0xFFF3F3FA),
-    background = Color(0xFFF9F9FF)
-)
+fun expressiveScheme(dark: Boolean): ColorScheme = if (!dark) {
+    lightColorScheme(
+        primary = Color(0xFF4F64FF),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFDCE1FF),
+        onPrimaryContainer = Color(0xFF07144E),
+        secondaryContainer = Color(0xFFDDE2FF),
+        onSecondaryContainer = Color(0xFF101B4F),
+        surface = Color(0xFFFAF8FF),
+        surfaceContainer = Color(0xFFF0EEF6),
+        surfaceContainerHigh = Color(0xFFE9E7EF),
+        surfaceContainerLow = Color(0xFFF5F2FA),
+        background = Color(0xFFFAF8FF)
+    )
+} else {
+    darkColorScheme(
+        primary = Color(0xFFB9C2FF),
+        onPrimary = Color(0xFF17245E),
+        primaryContainer = Color(0xFF3549A0),
+        onPrimaryContainer = Color(0xFFE0E4FF),
+        secondaryContainer = Color(0xFF3E466D),
+        onSecondaryContainer = Color(0xFFE0E5FF),
+        surface = Color(0xFF121318),
+        surfaceContainer = Color(0xFF1D1E24),
+        surfaceContainerHigh = Color(0xFF27282F),
+        surfaceContainerLow = Color(0xFF191A20),
+        background = Color(0xFF121318)
+    )
+}
