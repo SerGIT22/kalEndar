@@ -47,12 +47,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -445,6 +447,7 @@ fun MonthView(
     }
 
     val selectedEvents = eventsByDate[date].orEmpty()
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     Column(
         Modifier
@@ -523,10 +526,12 @@ fun MonthView(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(270.dp)
-                .pointerInput(month, date, eventDotsByDate) {
+                .onSizeChanged { canvasSize = it }
+                .pointerInput(month, date, eventDotsByDate, canvasSize) {
                     detectTapGestures { offset ->
-                        val cellWidth = size.width / 7f
-                        val cellHeight = size.height / 6f
+                        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectTapGestures
+                        val cellWidth = canvasSize.width.toFloat() / 7f
+                        val cellHeight = canvasSize.height.toFloat() / 6f
                         val column = (offset.x / cellWidth).toInt().coerceIn(0, 6)
                         val row = (offset.y / cellHeight).toInt().coerceIn(0, 5)
                         val index = row * 7 + column
