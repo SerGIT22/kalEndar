@@ -9,7 +9,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -41,6 +46,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.carnetdegamer.calendario.data.*
 import java.time.*
@@ -58,23 +70,83 @@ class MainActivity : ComponentActivity() {
 
 class CalendarViewModel : ViewModel() {
     private var repo: CalendarRepository? = null
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var refreshJob: Job? = null
+    private var loadedFrom: LocalDate? = null
+    private var loadedTo: LocalDate? = null
+
     var calendars by mutableStateOf<List<CalendarInfo>>(emptyList()); private set
     var events by mutableStateOf<List<CalendarEvent>>(emptyList()); private set
     var ready by mutableStateOf(false); private set
 
-    fun attach(r: CalendarRepository) { if (repo == null) repo = r; refresh() }
+    // CalendarProvider queries can be slow, especially with Google Calendar.
+    // Never execute them on the Compose/UI thread.
+    fun attach(r: CalendarRepository) {
+        if (repo == null) {
+            repo = r
+            refresh(LocalDate.now())
+        }
+    }
+
     fun refresh(focus: LocalDate = LocalDate.now()) {
         val r = repo ?: return
-        calendars = r.calendars()
-        val from = focus.minusMonths(3).withDayOfMonth(1).atStartMillis()
-        val to = focus.plusMonths(3).withDayOfMonth(1).atStartMillis()
-        events = r.events(from, to)
-        ready = true
+        refreshJob?.cancel()
+        refreshJob = ioScope.launch {
+            val from = focus.minusMonths(6).withDayOfMonth(1).atStartMillis()
+            val to = focus.plusMonths(6).withDayOfMonth(1).atStartMillis()
+            val loadedCalendars = r.calendars()
+            val loadedEvents = r.events(from, to)
+            withContext(Dispatchers.Main.immediate) {
+                calendars = loadedCalendars
+                events = loadedEvents
+                loadedFrom = from.toLocalDate()
+                loadedTo = to.toLocalDate()
+                ready = true
+            }
+        }
     }
-    fun create(draft: EventDraft) { repo?.insert(draft); refresh(millisToLocalDate(draft.startMillis)) }
-    fun update(id: Long, draft: EventDraft) { repo?.update(id, draft); refresh(millisToLocalDate(draft.startMillis)) }
-    fun delete(id: Long) { repo?.delete(id); refresh() }
+
+    fun ensureRange(focus: LocalDate) {
+        // Do not hit CalendarProvider while the user is navigating. Only reload
+        // when the selected date actually leaves the cached window.
+        val from = loadedFrom
+        val to = loadedTo
+        if (from == null || to == null || focus.isBefore(from.plusMonths(1)) || focus.isAfter(to.minusMonths(1))) {
+            refresh(focus)
+        }
+    }
+
+    fun create(draft: EventDraft) {
+        val r = repo ?: return
+        ioScope.launch {
+            r.insert(draft)
+            refresh(draft.startMillis.toLocalDate())
+        }
+    }
+
+    fun update(id: Long, draft: EventDraft) {
+        val r = repo ?: return
+        ioScope.launch {
+            r.update(id, draft)
+            refresh(draft.startMillis.toLocalDate())
+        }
+    }
+
+    fun delete(id: Long) {
+        val r = repo ?: return
+        ioScope.launch {
+            r.delete(id)
+            refresh()
+        }
+    }
+
+    override fun onCleared() {
+        ioScope.cancel()
+        super.onCleared()
+    }
 }
+
+private fun Long.toLocalDate(): LocalDate = millisToLocalDate(this)
 
 enum class CalendarView { MONTH, WEEK, DAY, AGENDA }
 
@@ -186,7 +258,8 @@ fun CalendarScreen(vm: CalendarViewModel) {
                 date,
                 onDate = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    date = it; vm.refresh(it)
+                    date = it
+                    vm.ensureRange(it)
                 },
                 vm.events,
                 onEvent = { editing = it; showCreator = true }
@@ -195,7 +268,7 @@ fun CalendarScreen(vm: CalendarViewModel) {
     }
 
     // Separate FAB: deliberately outside the bottom navigation, matching the requested Pixel/Material Expressive layout.
-    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 18.dp, bottom = 88.dp), contentAlignment = Alignment.BottomEnd) {
+    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 18.dp, bottom = 92.dp), contentAlignment = Alignment.BottomEnd) {
         FloatingActionButton(
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -230,10 +303,10 @@ fun ViewSwitcher(
     onEvent: (CalendarEvent) -> Unit
 ) {
     AnimatedContent(
-        view,
+        targetState = view,
         transitionSpec = {
-            (slideIntoContainer(androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Left) togetherWith
-                slideOutOfContainer(androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Left))
+            (fadeIn(animationSpec = tween(180)) + scaleIn(initialScale = 0.985f, animationSpec = tween(180))) togetherWith
+                (fadeOut(animationSpec = tween(120)) + scaleOut(targetScale = 1.015f, animationSpec = tween(120)))
         },
         label = "view"
     ) { v ->
@@ -249,17 +322,13 @@ fun ViewSwitcher(
 @Composable
 fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -> Unit, onEvent: (CalendarEvent) -> Unit) {
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
-    val first = month.withDayOfMonth(1)
-    val offset = first.dayOfWeek.value - 1
-    val days = (0 until offset).map { first.minusDays((offset - it).toLong()) } +
-        (1..month.lengthOfMonth()).map { month.withDayOfMonth(it) }
-    val padded = days + (0 until ((7 - days.size % 7) % 7)).map { days.last().plusDays((it + 1).toLong()) }
     val haptic = LocalView.current
+    val eventsByDate = remember(events) { events.groupBy { millisToLocalDate(it.start) } }
 
     Column(
         Modifier
             .fillMaxWidth()
-            .pointerInput(month) {
+            .pointerInput(Unit) {
                 var dragTotal = 0f
                 detectHorizontalDragGestures(
                     onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
@@ -300,34 +369,52 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
             }
         }
         Spacer(Modifier.height(4.dp))
-        LazyVerticalGrid(
-            GridCells.Fixed(7),
-            modifier = Modifier.heightIn(max = 372.dp),
-            userScrollEnabled = false
-        ) {
-            items(padded) { day ->
-                val selected = day == date
-                val dayEvents = events.filter { millisToLocalDate(it.start) == day }
-                Column(
-                    Modifier
-                        .padding(2.dp)
-                        .clip(RoundedCornerShape(17.dp))
-                        .clickable {
-                            haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            onDate(day)
-                        }
-                        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-                        .padding(vertical = 7.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        day.dayOfMonth.toString(),
-                        color = if (day.month != month.month) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                    )
-                    Row(Modifier.height(10.dp), horizontalArrangement = Arrangement.Center) {
-                        dayEvents.take(3).forEach { event ->
-                            Box(Modifier.padding(horizontal = 1.dp).size(5.dp).clip(CircleShape).background(Color(event.color)))
+        AnimatedContent(
+            targetState = month,
+            transitionSpec = {
+                (fadeIn(tween(160)) + scaleIn(initialScale = 0.985f, animationSpec = tween(160))) togetherWith
+                    (fadeOut(tween(100)) + scaleOut(targetScale = 1.01f, animationSpec = tween(100)))
+            },
+            label = "monthGrid"
+        ) { targetMonth ->
+            val targetFirst = targetMonth.withDayOfMonth(1)
+            val targetOffset = targetFirst.dayOfWeek.value - 1
+            val targetDays = (0 until targetOffset).map { targetFirst.minusDays((targetOffset - it).toLong()) } +
+                (1..targetMonth.lengthOfMonth()).map { targetMonth.withDayOfMonth(it) }
+            val targetPadded = targetDays + (0 until ((7 - targetDays.size % 7) % 7)).map { targetDays.last().plusDays((it + 1).toLong()) }
+
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(7),
+                modifier = Modifier.heightIn(max = 372.dp),
+                userScrollEnabled = false
+            ) {
+                items(
+                    items = targetPadded,
+                    key = { it.toEpochDay() }
+                ) { day ->
+                    val selected = day == date
+                    val dayEvents = eventsByDate[day].orEmpty()
+                    Column(
+                        Modifier
+                            .padding(2.dp)
+                            .clip(RoundedCornerShape(17.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                onDate(day)
+                            }
+                            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                            .padding(vertical = 7.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            day.dayOfMonth.toString(),
+                            color = if (day.month != targetMonth.month) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                        )
+                        Row(Modifier.height(10.dp), horizontalArrangement = Arrangement.Center) {
+                            dayEvents.take(3).forEach { event ->
+                                Box(Modifier.padding(horizontal = 1.dp).size(5.dp).clip(CircleShape).background(Color(event.color)))
+                            }
                         }
                     }
                 }
@@ -348,6 +435,7 @@ fun MonthView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) 
 fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -> Unit, onEvent: (CalendarEvent) -> Unit) {
     val monday = date.minusDays((date.dayOfWeek.value - 1).toLong())
     val haptic = LocalView.current
+    val eventsByDate = remember(events) { events.groupBy { millisToLocalDate(it.start) } }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         (0..6).forEach { i ->
             val d = monday.plusDays(i.toLong())
@@ -364,12 +452,12 @@ fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -
                 Text(d.dayOfWeek.getDisplayName(TextStyle.SHORT, esLocale).take(2), fontSize = 11.sp)
                 Text(d.dayOfMonth.toString(), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(5.dp))
-                Row { events.filter { millisToLocalDate(it.start) == d }.take(3).forEach { Box(Modifier.padding(horizontal = 1.dp).size(5.dp).clip(CircleShape).background(Color(it.color))) } }
+                Row { eventsByDate[d].orEmpty().take(3).forEach { Box(Modifier.padding(horizontal = 1.dp).size(5.dp).clip(CircleShape).background(Color(it.color))) } }
             }
         }
     }
     Spacer(Modifier.height(12.dp))
-    EventList(events.filter { val d = millisToLocalDate(it.start); !d.isBefore(monday) && d.isBefore(monday.plusDays(7)) }, onEvent)
+    EventList((0..6).flatMap { eventsByDate[monday.plusDays(it.toLong())].orEmpty() }.sortedBy { it.start }, onEvent)
 }
 
 @Composable
@@ -378,6 +466,7 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
     val allDay = dayEvents.filter { it.allDay }
     val timed = dayEvents.filterNot { it.allDay }
     val zone = ZoneId.systemDefault()
+    val eventsByHour = remember(timed) { timed.groupBy { Instant.ofEpochMilli(it.start).atZone(zone).hour } }
 
     LazyColumn(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)),
@@ -392,8 +481,8 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
                 }
             }
         }
-        items((0..23).toList()) { hour ->
-            val hourEvents = timed.filter { Instant.ofEpochMilli(it.start).atZone(zone).hour == hour }
+        items(items = (0..23).toList(), key = { it }) { hour ->
+            val hourEvents = eventsByHour[hour].orEmpty()
             Row(
                 Modifier.fillMaxWidth().heightIn(min = if (hourEvents.isEmpty()) 52.dp else 74.dp),
                 verticalAlignment = Alignment.Top
@@ -418,11 +507,13 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
 
 @Composable
 fun AgendaView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
-    val sorted = events
-        .filter { !millisToLocalDate(it.start).isBefore(date.minusDays(7)) && !millisToLocalDate(it.start).isAfter(date.plusDays(30)) }
-        .sortedBy { it.start }
+    val sorted = remember(events, date) {
+        events
+            .filter { !millisToLocalDate(it.start).isBefore(date.minusDays(7)) && !millisToLocalDate(it.start).isAfter(date.plusDays(30)) }
+            .sortedBy { it.start }
+    }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
-        items(sorted) { EventCard(it, onEvent) }
+        items(items = sorted, key = { it.id }) { EventCard(it, onEvent) }
     }
 }
 
@@ -463,8 +554,11 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
     Box(
-        Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 14.dp, end = 88.dp, bottom = 16.dp),
-        contentAlignment = Alignment.CenterStart
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp, bottom = 10.dp),
+        contentAlignment = Alignment.Center
     ) {
         Row(
             Modifier
