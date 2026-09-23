@@ -20,11 +20,9 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,17 +42,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.drawText
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -423,36 +414,35 @@ fun MonthView(
     onDate: (LocalDate) -> Unit,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    var month by remember(date.year, date.month) {
-        mutableStateOf(date.withDayOfMonth(1))
-    }
+    var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val haptic = LocalView.current
-    val textMeasurer = rememberTextMeasurer()
-    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
-    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val outline = MaterialTheme.colorScheme.outline
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
+    // Pre-calculate the 42 cells only when the month changes. There is no
+    // AnimatedContent here: it used to keep two complete month grids alive
+    // during the transition and was the main source of stutter on this screen.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
-        List(42) { index ->
-            if (index < leading) {
-                first.minusDays((leading - index).toLong())
-            } else {
-                first.plusDays((index - leading).toLong())
+        buildList {
+            repeat(leading) { index ->
+                add(first.minusDays((leading - index).toLong()))
             }
+            for (day in 1..month.lengthOfMonth()) {
+                add(month.withDayOfMonth(day))
+            }
+            while (size < 42) add(last().plusDays(1))
         }
     }
 
-    val selectedEvents = eventsByDate[date].orEmpty()
-    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    // All indexing was already done on Dispatchers.IO by the ViewModel.
+    // Month only performs O(1) map lookups while it composes its 42 cells.
+    val eventDots = eventDotsByDate
+    val selectedDayEvents = eventsByDate[date].orEmpty()
 
     Column(
         Modifier
             .fillMaxWidth()
-            .pointerInput(month) {
+            .pointerInput(Unit) {
                 var dragTotal = 0f
                 detectHorizontalDragGestures(
                     onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
@@ -489,6 +479,7 @@ fun MonthView(
             ) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
             }
+
             Text(
                 "${month.month.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
                 Modifier.weight(1f),
@@ -496,6 +487,7 @@ fun MonthView(
                 fontSize = 17.sp,
                 textAlign = TextAlign.Center
             )
+
             IconButton(
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -514,118 +506,80 @@ fun MonthView(
                     dayName,
                     Modifier.weight(1f),
                     textAlign = TextAlign.Center,
-                    color = onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 11.sp
                 )
             }
         }
 
-        // The grid is one composable instead of 42 independently composed cells.
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(270.dp)
-                .onSizeChanged { canvasSize = it }
-                .pointerInput(month, date, eventDotsByDate, canvasSize) {
-                    detectTapGestures { offset ->
-                        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectTapGestures
-                        val cellWidth = canvasSize.width.toFloat() / 7f
-                        val cellHeight = canvasSize.height.toFloat() / 6f
-                        val column = (offset.x / cellWidth).toInt().coerceIn(0, 6)
-                        val row = (offset.y / cellHeight).toInt().coerceIn(0, 5)
-                        val index = row * 7 + column
-                        val tappedDay = days[index]
-                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        onDate(tappedDay)
+        // Fixed 6 x 7 grid. No lazy layout and no animated double-buffering:
+        // 42 lightweight cells are cheaper and much more stable here.
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            days.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth().height(45.dp)) {
+                    week.forEach { day ->
+                        val selected = day == date
+                        val colors = eventDots[day].orEmpty()
+
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(horizontal = 1.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                                    else Color.Transparent
+                                )
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onDate(day)
+                                }
+                                .padding(top = 3.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                day.dayOfMonth.toString(),
+                                color = when {
+                                    selected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    day.month != month.month -> MaterialTheme.colorScheme.outline
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                },
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 13.sp
+                            )
+
+                            Row(
+                                Modifier.height(8.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                colors.forEach { color ->
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 1.dp)
+                                            .size(4.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(color))
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
-        ) {
-            drawMonthGrid(
-                days = days,
-                selectedDate = date,
-                month = month,
-                eventDotsByDate = eventDotsByDate,
-                textMeasurer = textMeasurer,
-                primaryContainer = primaryContainer,
-                onPrimaryContainer = onPrimaryContainer,
-                onSurface = onSurface,
-                outline = outline
-            )
+            }
         }
 
         Spacer(Modifier.height(6.dp))
+
         Text(
             "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
+
         Spacer(Modifier.height(5.dp))
-        EventList(selectedEvents, onEvent)
-    }
-}
-
-private fun DrawScope.drawMonthGrid(
-    days: List<LocalDate>,
-    selectedDate: LocalDate,
-    month: LocalDate,
-    eventDotsByDate: Map<LocalDate, List<Int>>,
-    textMeasurer: androidx.compose.ui.text.TextMeasurer,
-    primaryContainer: Color,
-    onPrimaryContainer: Color,
-    onSurface: Color,
-    outline: Color
-) {
-    val cellWidth = size.width / 7f
-    val cellHeight = size.height / 6f
-
-    days.forEachIndexed { index, day ->
-        val column = index % 7
-        val row = index / 7
-        val left = column * cellWidth
-        val top = row * cellHeight
-        val centerX = left + cellWidth / 2f
-
-        if (day == selectedDate) {
-            drawRoundRect(
-                color = primaryContainer,
-                topLeft = androidx.compose.ui.geometry.Offset(left + 1f, top + 1f),
-                size = androidx.compose.ui.geometry.Size(cellWidth - 2f, cellHeight - 2f),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f)
-            )
-        }
-
-        val dayColor = when {
-            day == selectedDate -> onPrimaryContainer
-            day.month != month.month -> outline
-            else -> onSurface
-        }
-        val dayStyle = TextStyle(
-            fontSize = 13.sp,
-            fontWeight = if (day == selectedDate) FontWeight.Bold else FontWeight.Normal,
-            color = dayColor
-        )
-        val layout = textMeasurer.measure(AnnotatedString(day.dayOfMonth.toString()), dayStyle)
-        drawText(
-            layout,
-            topLeft = androidx.compose.ui.geometry.Offset(
-                centerX - layout.size.width / 2f,
-                top + 3.dp.toPx()
-            )
-        )
-
-        val colors = eventDotsByDate[day].orEmpty()
-        if (colors.isNotEmpty()) {
-            val dotSize = 4.dp.toPx()
-            val gap = 2.dp.toPx()
-            val totalWidth = colors.size * dotSize + (colors.size - 1) * gap
-            var x = centerX - totalWidth / 2f + dotSize / 2f
-            val dotY = top + 29.dp.toPx()
-            colors.forEach { color ->
-                drawCircle(Color(color), radius = dotSize / 2f, center = androidx.compose.ui.geometry.Offset(x, dotY))
-                x += dotSize + gap
-            }
-        }
+        EventList(selectedDayEvents, onEvent)
     }
 }
 
