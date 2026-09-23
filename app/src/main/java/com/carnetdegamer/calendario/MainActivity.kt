@@ -20,9 +20,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,30 +38,26 @@ import androidx.compose.material3.*
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.animation.core.Spring
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.carnetdegamer.calendario.data.*
 import java.time.*
@@ -67,6 +65,13 @@ import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,17 +89,10 @@ class CalendarViewModel : ViewModel() {
 
     var calendars by mutableStateOf<List<CalendarInfo>>(emptyList()); private set
     var events by mutableStateOf<List<CalendarEvent>>(emptyList()); private set
-
-    // Pre-index events off the UI thread. The Month view only needs events
-    // grouped by day; doing groupBy() inside a Composable was causing the
-    // complete event list to be processed on every entry/recomposition.
     var eventsByDate by mutableStateOf<Map<LocalDate, List<CalendarEvent>>>(emptyMap()); private set
     var eventDotsByDate by mutableStateOf<Map<LocalDate, List<Int>>>(emptyMap()); private set
-
     var ready by mutableStateOf(false); private set
 
-    // CalendarProvider queries can be slow, especially with Google Calendar.
-    // Never execute them on the Compose/UI thread.
     fun attach(r: CalendarRepository) {
         if (repo == null) {
             repo = r
@@ -111,15 +109,10 @@ class CalendarViewModel : ViewModel() {
             val loadedCalendars = r.calendars()
             val loadedEvents = r.events(from, to)
 
-            // This work stays on Dispatchers.IO. Compose receives already
-            // indexed data, so entering Month never has to scan every event.
+            // All expensive date conversion/indexing stays off the Compose thread.
             val byDate = loadedEvents.groupBy { eventLocalDate(it) }
             val dotsByDate = byDate.mapValues { (_, dayEvents) ->
-                dayEvents.asSequence()
-                    .map { it.color }
-                    .distinct()
-                    .take(3)
-                    .toList()
+                dayEvents.asSequence().map { it.color }.distinct().take(3).toList()
             }
 
             withContext(Dispatchers.Main.immediate) {
@@ -135,8 +128,6 @@ class CalendarViewModel : ViewModel() {
     }
 
     fun ensureRange(focus: LocalDate) {
-        // Do not hit CalendarProvider while the user is navigating. Only reload
-        // when the selected date actually leaves the cached window.
         val from = loadedFrom
         val to = loadedTo
         if (from == null || to == null || focus.isBefore(from.plusMonths(1)) || focus.isAfter(to.minusMonths(1))) {
@@ -174,8 +165,6 @@ class CalendarViewModel : ViewModel() {
     }
 }
 
-private fun Long.toLocalDate(): LocalDate = millisToLocalDate(this)
-
 private fun eventLocalDate(event: CalendarEvent): LocalDate =
     millisToLocalDate(event.start, event.allDay)
 
@@ -191,11 +180,20 @@ private val esLocale = Locale("es", "ES")
 fun CalendarApp(vm: CalendarViewModel = viewModel()) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var hasPermission by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED)
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.READ_CALENDAR
+            ) == PackageManager.PERMISSION_GRANTED
+        )
     }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
         hasPermission = result[Manifest.permission.READ_CALENDAR] == true
     }
+
     LaunchedEffect(hasPermission) {
         if (hasPermission) vm.attach(CalendarRepository(context.contentResolver))
     }
@@ -211,9 +209,18 @@ fun CalendarApp(vm: CalendarViewModel = viewModel()) {
 
     MaterialTheme(colorScheme = colorScheme) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            if (!hasPermission) PermissionScreen {
-                launcher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
-            } else CalendarScreen(vm)
+            if (!hasPermission) {
+                PermissionScreen {
+                    launcher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_CALENDAR,
+                            Manifest.permission.WRITE_CALENDAR
+                        )
+                    )
+                }
+            } else {
+                CalendarScreen(vm)
+            }
         }
     }
 }
@@ -230,7 +237,12 @@ fun PermissionScreen(onGrant: () -> Unit) {
             Modifier.size(116.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Rounded.CalendarMonth, null, tint = Color.White, modifier = Modifier.size(60.dp))
+            Icon(
+                Icons.Rounded.CalendarMonth,
+                null,
+                tint = Color.White,
+                modifier = Modifier.size(60.dp)
+            )
         }
         Spacer(Modifier.height(28.dp))
         Text("Calendario", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
@@ -242,7 +254,10 @@ fun PermissionScreen(onGrant: () -> Unit) {
         )
         Spacer(Modifier.height(24.dp))
         Button(
-            onClick = { view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onGrant() },
+            onClick = {
+                view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onGrant()
+            },
             shape = RoundedCornerShape(22.dp)
         ) { Text("Conceder acceso") }
     }
@@ -258,8 +273,10 @@ fun CalendarScreen(vm: CalendarViewModel) {
     val haptic = LocalView.current
 
     val title = when (view) {
-        CalendarView.MONTH -> date.month.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }
-        else -> date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }
+        CalendarView.MONTH -> date.month.getDisplayName(TextStyle.FULL, esLocale)
+            .replaceFirstChar { it.uppercase(esLocale) }
+        else -> date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale)
+            .replaceFirstChar { it.uppercase(esLocale) }
     }
 
     Scaffold(
@@ -283,12 +300,17 @@ fun CalendarScreen(vm: CalendarViewModel) {
                     AnimatedContent(
                         targetState = title,
                         transitionSpec = {
-                            (slideInVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)) { it / 2 } + fadeIn(tween(140))) togetherWith
-                                (slideOutVertically(animationSpec = tween(140)) { -it / 3 } + fadeOut(tween(100)))
+                            (slideInVertically(tween(180, easing = FastOutSlowInEasing)) { it / 2 } +
+                                fadeIn(tween(140))) togetherWith
+                                (slideOutVertically(tween(140)) { -it / 3 } + fadeOut(tween(100)))
                         },
                         label = "calendar_title"
                     ) { animatedTitle ->
-                        Text(animatedTitle, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            animatedTitle,
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                     Text(
                         "${date.dayOfMonth} de ${date.month.getDisplayName(TextStyle.FULL, esLocale)}",
@@ -297,7 +319,8 @@ fun CalendarScreen(vm: CalendarViewModel) {
                 }
                 IconButton(onClick = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    date = LocalDate.now(); vm.refresh(date)
+                    date = LocalDate.now()
+                    vm.refresh(date)
                 }) { Icon(Icons.Rounded.Today, "Hoy") }
                 IconButton(onClick = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -306,23 +329,25 @@ fun CalendarScreen(vm: CalendarViewModel) {
             }
             Spacer(Modifier.height(10.dp))
             ViewSwitcher(
-                view,
-                date,
+                view = view,
+                date = date,
                 onDate = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     date = it
                     vm.ensureRange(it)
                 },
-                vm.events,
-                vm.eventsByDate,
-                vm.eventDotsByDate,
+                events = vm.events,
+                eventsByDate = vm.eventsByDate,
+                eventDotsByDate = vm.eventDotsByDate,
                 onEvent = { editing = it; showCreator = true }
             )
         }
     }
 
-    // Separate FAB: deliberately outside the bottom navigation, matching the requested Pixel/Material Expressive layout.
-    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 16.dp, bottom = 106.dp), contentAlignment = Alignment.BottomEnd) {
+    Box(
+        Modifier.fillMaxSize().navigationBarsPadding().padding(end = 16.dp, bottom = 106.dp),
+        contentAlignment = Alignment.BottomEnd
+    ) {
         FloatingActionButton(
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -333,15 +358,18 @@ fun CalendarScreen(vm: CalendarViewModel) {
             shape = RoundedCornerShape(17.dp),
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,
-            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 5.dp, pressedElevation = 8.dp)
+            elevation = FloatingActionButtonDefaults.elevation(
+                defaultElevation = 5.dp,
+                pressedElevation = 8.dp
+            )
         ) { Icon(Icons.Rounded.Add, "Nuevo evento", modifier = Modifier.size(24.dp)) }
     }
 
     if (showCreator) {
         EventEditorDialog(
-            vm,
-            date,
-            editing,
+            vm = vm,
+            selectedDate = date,
+            editing = editing,
             onDismiss = { showCreator = false },
             onSaved = { }
         )
@@ -358,18 +386,32 @@ fun ViewSwitcher(
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    // Keep view switching synchronous. AnimatedContent composes both the old
-    // and new screen at the same time, which is especially expensive for the
-    // month grid. The calendar should feel immediate rather than animated at
-    // the cost of dropped frames.
     when (view) {
-        CalendarView.MONTH -> MonthView(date, eventsByDate, eventDotsByDate, onDate, onEvent)
-        CalendarView.WEEK -> WeekView(date, events, onDate, onEvent)
-        CalendarView.DAY -> DayView(date, events, onEvent)
+        CalendarView.MONTH -> MonthView(
+            date,
+            eventsByDate,
+            eventDotsByDate,
+            onDate,
+            onEvent
+        )
+        CalendarView.WEEK -> WeekView(date, eventsByDate, onDate, onEvent)
+        CalendarView.DAY -> DayView(date, eventsByDate, onEvent)
         CalendarView.AGENDA -> AgendaView(date, events, onEvent)
     }
 }
 
+/**
+ * Performance-critical month view.
+ *
+ * The previous implementation created 42 Compose subtrees containing Column,
+ * Text, Row, Box, clip and clickable modifiers. That is unnecessary for a
+ * fixed calendar grid and can become expensive when the selected date and the
+ * event maps change together.
+ *
+ * This version renders the entire 42-cell grid with ONE Canvas. The only
+ * Compose work per frame is drawing primitives and text. Event lookup remains
+ * O(1) through the ViewModel's prebuilt map.
+ */
 @Composable
 fun MonthView(
     date: LocalDate,
@@ -378,35 +420,35 @@ fun MonthView(
     onDate: (LocalDate) -> Unit,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
+    var month by remember(date.year, date.month) {
+        mutableStateOf(date.withDayOfMonth(1))
+    }
     val haptic = LocalView.current
+    val textMeasurer = rememberTextMeasurer()
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val outline = MaterialTheme.colorScheme.outline
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
-    // Pre-calculate the 42 cells only when the month changes. There is no
-    // AnimatedContent here: it used to keep two complete month grids alive
-    // during the transition and was the main source of stutter on this screen.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
-        buildList {
-            repeat(leading) { index ->
-                add(first.minusDays((leading - index).toLong()))
+        List(42) { index ->
+            if (index < leading) {
+                first.minusDays((leading - index).toLong())
+            } else {
+                first.plusDays((index - leading).toLong())
             }
-            for (day in 1..month.lengthOfMonth()) {
-                add(month.withDayOfMonth(day))
-            }
-            while (size < 42) add(last().plusDays(1))
         }
     }
 
-    // All indexing was already done on Dispatchers.IO by the ViewModel.
-    // Month only performs O(1) map lookups while it composes its 42 cells.
-    val eventDots = eventDotsByDate
-    val selectedDayEvents = eventsByDate[date].orEmpty()
+    val selectedEvents = eventsByDate[date].orEmpty()
 
     Column(
         Modifier
             .fillMaxWidth()
-            .pointerInput(Unit) {
+            .pointerInput(month) {
                 var dragTotal = 0f
                 detectHorizontalDragGestures(
                     onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
@@ -443,7 +485,6 @@ fun MonthView(
             ) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
             }
-
             Text(
                 "${month.month.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
                 Modifier.weight(1f),
@@ -451,7 +492,6 @@ fun MonthView(
                 fontSize = 17.sp,
                 textAlign = TextAlign.Center
             )
-
             IconButton(
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
@@ -470,88 +510,128 @@ fun MonthView(
                     dayName,
                     Modifier.weight(1f),
                     textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = onSurfaceVariant,
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 11.sp
                 )
             }
         }
 
-        // Fixed 6 x 7 grid. No lazy layout and no animated double-buffering:
-        // 42 lightweight cells are cheaper and much more stable here.
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            days.chunked(7).forEach { week ->
-                Row(Modifier.fillMaxWidth().height(45.dp)) {
-                    week.forEach { day ->
-                        val selected = day == date
-                        val colors = eventDots[day].orEmpty()
-
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .padding(horizontal = 1.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.primaryContainer
-                                    else Color.Transparent
-                                )
-                                .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                    onDate(day)
-                                }
-                                .padding(top = 3.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                day.dayOfMonth.toString(),
-                                color = when {
-                                    selected -> MaterialTheme.colorScheme.onPrimaryContainer
-                                    day.month != month.month -> MaterialTheme.colorScheme.outline
-                                    else -> MaterialTheme.colorScheme.onSurface
-                                },
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 13.sp
-                            )
-
-                            Row(
-                                Modifier.height(8.dp),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                colors.forEach { color ->
-                                    Box(
-                                        Modifier
-                                            .padding(horizontal = 1.dp)
-                                            .size(4.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(color))
-                                    )
-                                }
-                            }
-                        }
+        // The grid is one composable instead of 42 independently composed cells.
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(270.dp)
+                .pointerInput(month, date, eventDotsByDate) {
+                    detectTapGestures { offset ->
+                        val cellWidth = size.width / 7f
+                        val cellHeight = size.height / 6f
+                        val column = (offset.x / cellWidth).toInt().coerceIn(0, 6)
+                        val row = (offset.y / cellHeight).toInt().coerceIn(0, 5)
+                        val index = row * 7 + column
+                        val tappedDay = days[index]
+                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onDate(tappedDay)
                     }
                 }
-            }
+        ) {
+            drawMonthGrid(
+                days = days,
+                selectedDate = date,
+                month = month,
+                eventDotsByDate = eventDotsByDate,
+                textMeasurer = textMeasurer,
+                primaryContainer = primaryContainer,
+                onPrimaryContainer = onPrimaryContainer,
+                onSurface = onSurface,
+                outline = outline
+            )
         }
 
         Spacer(Modifier.height(6.dp))
-
         Text(
             "${date.dayOfWeek.getDisplayName(TextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
-
         Spacer(Modifier.height(5.dp))
-        EventList(selectedDayEvents, onEvent)
+        EventList(selectedEvents, onEvent)
+    }
+}
+
+private fun DrawScope.drawMonthGrid(
+    days: List<LocalDate>,
+    selectedDate: LocalDate,
+    month: LocalDate,
+    eventDotsByDate: Map<LocalDate, List<Int>>,
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    primaryContainer: Color,
+    onPrimaryContainer: Color,
+    onSurface: Color,
+    outline: Color
+) {
+    val cellWidth = size.width / 7f
+    val cellHeight = size.height / 6f
+
+    days.forEachIndexed { index, day ->
+        val column = index % 7
+        val row = index / 7
+        val left = column * cellWidth
+        val top = row * cellHeight
+        val centerX = left + cellWidth / 2f
+
+        if (day == selectedDate) {
+            drawRoundRect(
+                color = primaryContainer,
+                topLeft = androidx.compose.ui.geometry.Offset(left + 1f, top + 1f),
+                size = androidx.compose.ui.geometry.Size(cellWidth - 2f, cellHeight - 2f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(12f, 12f)
+            )
+        }
+
+        val dayColor = when {
+            day == selectedDate -> onPrimaryContainer
+            day.month != month.month -> outline
+            else -> onSurface
+        }
+        val dayStyle = TextStyle(
+            fontSize = 13.sp,
+            fontWeight = if (day == selectedDate) FontWeight.Bold else FontWeight.Normal,
+            color = dayColor
+        )
+        val layout = textMeasurer.measure(AnnotatedString(day.dayOfMonth.toString()), dayStyle)
+        drawText(
+            layout,
+            topLeft = androidx.compose.ui.geometry.Offset(
+                centerX - layout.size.width / 2f,
+                top + 3.dp.toPx()
+            )
+        )
+
+        val colors = eventDotsByDate[day].orEmpty()
+        if (colors.isNotEmpty()) {
+            val dotSize = 4.dp.toPx()
+            val gap = 2.dp.toPx()
+            val totalWidth = colors.size * dotSize + (colors.size - 1) * gap
+            var x = centerX - totalWidth / 2f + dotSize / 2f
+            val dotY = top + 29.dp.toPx()
+            colors.forEach { color ->
+                drawCircle(Color(color), radius = dotSize / 2f, center = androidx.compose.ui.geometry.Offset(x, dotY))
+                x += dotSize + gap
+            }
+        }
     }
 }
 
 @Composable
-fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -> Unit, onEvent: (CalendarEvent) -> Unit) {
+fun WeekView(
+    date: LocalDate,
+    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
+    onDate: (LocalDate) -> Unit,
+    onEvent: (CalendarEvent) -> Unit
+) {
     val monday = date.minusDays((date.dayOfWeek.value - 1).toLong())
     val haptic = LocalView.current
-    val eventsByDate = remember(events) { events.groupBy { eventLocalDate(it) } }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         (0..6).forEach { i ->
             val d = monday.plusDays(i.toLong())
@@ -560,30 +640,56 @@ fun WeekView(date: LocalDate, events: List<CalendarEvent>, onDate: (LocalDate) -
                 Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(16.dp))
-                    .clickable { haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK); onDate(d) }
-                    .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer)
+                    .clickable {
+                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        onDate(d)
+                    }
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceContainer
+                    )
                     .padding(vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(d.dayOfWeek.getDisplayName(TextStyle.SHORT, esLocale).take(2), fontSize = 11.sp)
                 Text(d.dayOfMonth.toString(), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(5.dp))
-                Row { eventsByDate[d].orEmpty().take(3).forEach { Box(Modifier.padding(horizontal = 1.dp).size(5.dp).clip(CircleShape).background(Color(it.color))) } }
+                Row {
+                    eventsByDate[d].orEmpty().take(3).forEach {
+                        Box(
+                            Modifier
+                                .padding(horizontal = 1.dp)
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(Color(it.color))
+                        )
+                    }
+                }
             }
         }
     }
     Spacer(Modifier.height(12.dp))
-    EventList((0..6).flatMap { eventsByDate[monday.plusDays(it.toLong())].orEmpty() }.sortedBy { it.start }, onEvent)
+    EventList(
+        (0..6)
+            .flatMap { eventsByDate[monday.plusDays(it.toLong())].orEmpty() }
+            .sortedBy { it.start },
+        onEvent
+    )
 }
 
 @Composable
-fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
-    val dayEvents = events.filter { eventLocalDate(it) == date }.sortedBy { it.start }
+fun DayView(
+    date: LocalDate,
+    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
+    onEvent: (CalendarEvent) -> Unit
+) {
+    val dayEvents = eventsByDate[date].orEmpty().sortedBy { it.start }
     val allDay = dayEvents.filter { it.allDay }
     val timed = dayEvents.filterNot { it.allDay }
     val zone = ZoneId.systemDefault()
-    val eventsByHour = remember(timed) { timed.groupBy { Instant.ofEpochMilli(it.start).atZone(zone).hour } }
-
+    val eventsByHour = remember(timed) {
+        timed.groupBy { Instant.ofEpochMilli(it.start).atZone(zone).hour }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)),
         verticalArrangement = Arrangement.spacedBy(0.dp),
@@ -591,8 +697,16 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
     ) {
         if (allDay.isNotEmpty()) {
             item {
-                Text("Todo el día", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp, bottom = 7.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.padding(bottom = 14.dp)) {
+                Text(
+                    "Todo el día",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp, bottom = 7.dp)
+                )
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                    modifier = Modifier.padding(bottom = 14.dp)
+                ) {
                     allDay.forEach { EventCard(it, onEvent) }
                 }
             }
@@ -625,17 +739,25 @@ fun DayView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEven
 fun AgendaView(date: LocalDate, events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
     val sorted = remember(events, date) {
         events
-            .filter { !eventLocalDate(it).isBefore(date.minusDays(7)) && !eventLocalDate(it).isAfter(date.plusDays(30)) }
+            .filter {
+                !eventLocalDate(it).isBefore(date.minusDays(7)) &&
+                    !eventLocalDate(it).isAfter(date.plusDays(30))
+            }
             .sortedBy { it.start }
     }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 20.dp)) {
+    LazyColumn(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 20.dp)
+    ) {
         items(items = sorted, key = { it.id }) { EventCard(it, onEvent) }
     }
 }
 
 @Composable
 fun EventList(events: List<CalendarEvent>, onEvent: (CalendarEvent) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { events.forEach { EventCard(it, onEvent) } }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        events.forEach { EventCard(it, onEvent) }
+    }
 }
 
 @Composable
@@ -646,11 +768,20 @@ fun EventCard(e: CalendarEvent, onEvent: (CalendarEvent) -> Unit) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.surfaceContainer)
-            .clickable { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onEvent(e) }
+            .clickable {
+                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                onEvent(e)
+            }
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.width(4.dp).height(42.dp).clip(RoundedCornerShape(4.dp)).background(Color(e.color)))
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(42.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(e.color))
+        )
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(e.title, fontWeight = FontWeight.SemiBold)
@@ -659,19 +790,26 @@ fun EventCard(e: CalendarEvent, onEvent: (CalendarEvent) -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp
             )
-            if (e.location.isNotBlank()) Text(e.location, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            if (e.location.isNotBlank()) {
+                Text(
+                    e.location,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp
+                )
+            }
         }
     }
 }
 
-fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))
+fun timeText(millis: Long) = Instant.ofEpochMilli(millis)
+    .atZone(ZoneId.systemDefault())
+    .format(DateTimeFormatter.ofPattern("HH:mm"))
 
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val hapticView = LocalView.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-
     val items = listOf(
         CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
         CalendarView.AGENDA to ("Agenda" to Icons.Rounded.ViewAgenda),
@@ -694,9 +832,6 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
         val slotWidth = contentWidth / 4f
         val targetOffset = outerPadding + slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
         val targetOffsetPx = with(density) { targetOffset.toPx() }
-
-        // Solo se mueve UNA capa. No se cambia el tamaño ni el layout de ningún
-        // elemento durante la animación.
         val animatedOffsetPx by androidx.compose.animation.core.animateFloatAsState(
             targetValue = targetOffsetPx,
             animationSpec = tween(190, easing = FastOutSlowInEasing),
@@ -704,16 +839,13 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
         )
 
         Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(72.dp),
+            modifier = Modifier.fillMaxWidth().height(72.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
             tonalElevation = 0.dp,
             shadowElevation = 0.dp,
             shape = RoundedCornerShape(36.dp)
         ) {
             Box(Modifier.fillMaxSize()) {
-                // Cápsula única. Se desplaza por GPU y no deja estados anteriores.
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
@@ -726,9 +858,7 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                 ) {
                     val (label, icon) = items[selectedIndex].second
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 7.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
@@ -750,14 +880,8 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                         )
                     }
                 }
-
-                // Los cuatro huecos tienen SIEMPRE el mismo layout. No usamos
-                // AnimatedVisibility ni ripple: ambos provocaban los halos que
-                // se veían al cambiar rápidamente entre secciones.
                 Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = outerPadding, vertical = 6.dp),
+                    modifier = Modifier.fillMaxSize().padding(horizontal = outerPadding, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     items.forEachIndexed { index, (destination, data) ->
@@ -778,8 +902,6 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            // El icono situado debajo de la cápsula seleccionada
-                            // queda oculto para que nunca aparezca duplicado.
                             Icon(
                                 imageVector = icon,
                                 contentDescription = label,
@@ -812,12 +934,32 @@ fun EventEditorDialog(
     var description by remember(editing) { mutableStateOf(editing?.description ?: "") }
     var allDay by remember(editing) { mutableStateOf(editing?.allDay ?: false) }
     var calendarId by remember(editing, vm.calendars) {
-        mutableStateOf(editing?.calendarId ?: vm.calendars.firstOrNull { it.writable }?.id ?: vm.calendars.firstOrNull()?.id ?: -1L)
+        mutableStateOf(
+            editing?.calendarId
+                ?: vm.calendars.firstOrNull { it.writable }?.id
+                ?: vm.calendars.firstOrNull()?.id
+                ?: -1L
+        )
     }
-    var startDate by remember(editing) { mutableStateOf(editing?.let { eventLocalDate(it) } ?: selectedDate) }
-    var startHour by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).hour } ?: 10) }
-    var startMinute by remember(editing) { mutableStateOf(editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).minute } ?: 0) }
-    var duration by remember(editing) { mutableStateOf(if (editing != null) ((editing.end - editing.start) / 60_000L).toInt().coerceAtLeast(1) else 60) }
+    var startDate by remember(editing) {
+        mutableStateOf(editing?.let { eventLocalDate(it) } ?: selectedDate)
+    }
+    var startHour by remember(editing) {
+        mutableStateOf(
+            editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).hour } ?: 10
+        )
+    }
+    var startMinute by remember(editing) {
+        mutableStateOf(
+            editing?.let { Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).minute } ?: 0
+        )
+    }
+    var duration by remember(editing) {
+        mutableStateOf(
+            if (editing != null) ((editing.end - editing.start) / 60_000L).toInt().coerceAtLeast(1)
+            else 60
+        )
+    }
     var reminder by remember(editing) { mutableStateOf(10) }
     var recurrence by remember(editing) { mutableStateOf(editing?.rrule ?: "") }
     var attendees by remember(editing) { mutableStateOf("") }
@@ -833,21 +975,19 @@ fun EventEditorDialog(
     }
 
     if (showDatePicker) {
-        androidx.compose.runtime.key(showDatePicker, startDate) {
+        key(showDatePicker, startDate) {
             val datePickerState = rememberDatePickerState(
                 initialSelectedDateMillis = startDate.toDatePickerMillis()
             )
             DatePickerDialog(
                 onDismissRequest = { showDatePicker = false },
                 confirmButton = {
-                    TextButton(
-                        onClick = {
-                            datePickerState.selectedDateMillis?.let { millis ->
-                                startDate = millisToLocalDate(millis, allDay = true)
-                            }
-                            showDatePicker = false
+                    TextButton(onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            startDate = millisToLocalDate(millis, allDay = true)
                         }
-                    ) { Text("Aceptar") }
+                        showDatePicker = false
+                    }) { Text("Aceptar") }
                 },
                 dismissButton = {
                     TextButton(onClick = { showDatePicker = false }) { Text("Cancelar") }
@@ -859,8 +999,9 @@ fun EventEditorDialog(
                     title = { Text("Selecciona una fecha") },
                     headline = {
                         Text(
-                            startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", esLocale))
-                                .replaceFirstChar { it.uppercase(esLocale) }
+                            startDate.format(
+                                DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM", esLocale)
+                            ).replaceFirstChar { it.uppercase(esLocale) }
                         )
                     }
                 )
@@ -874,125 +1015,281 @@ fun EventEditorDialog(
     ) {
         AnimatedVisibility(
             visible = editorVisible,
-            enter = fadeIn(tween(160)) + scaleIn(animationSpec = spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow), initialScale = 0.94f),
-            exit = fadeOut(tween(120)) + scaleOut(animationSpec = tween(160, easing = FastOutSlowInEasing), targetScale = 0.94f),
+            enter = fadeIn(tween(160)) +
+                scaleIn(
+                    animationSpec = spring(
+                        dampingRatio = 0.82f,
+                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                    ),
+                    initialScale = 0.94f
+                ),
+            exit = fadeOut(tween(120)) +
+                scaleOut(
+                    animationSpec = tween(160, easing = FastOutSlowInEasing),
+                    targetScale = 0.94f
+                ),
             modifier = Modifier.fillMaxSize()
         ) {
             Surface(
-                modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f).safeDrawingPadding().padding(horizontal = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f)
+                    .safeDrawingPadding()
+                    .padding(horizontal = 12.dp),
                 shape = RoundedCornerShape(30.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 tonalElevation = 3.dp
             ) {
                 Column(Modifier.fillMaxSize()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(if (editing == null) "Nuevo evento" else "Editar evento", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text("Calendario", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 22.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (editing == null) "Nuevo evento" else "Editar evento",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "Calendario",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { closeEditor() }) {
+                            Icon(Icons.Rounded.Close, "Cerrar")
+                        }
                     }
-                    IconButton(onClick = { closeEditor() }) { Icon(Icons.Rounded.Close, "Cerrar") }
-                }
 
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    item {
-                        OutlinedTextField(title, { title = it }, label = { Text("Título") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp))
-                    }
-                    item {
-                        Box {
-                            OutlinedButton(onClick = { calendarMenu = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-                                Text(vm.calendars.firstOrNull { it.id == calendarId }?.let { "${it.name} · ${it.account}" } ?: "Calendario", Modifier.weight(1f), textAlign = TextAlign.Start)
-                                Icon(Icons.Rounded.ExpandMore, null)
-                            }
-                            DropdownMenu(expanded = calendarMenu, onDismissRequest = { calendarMenu = false }) {
-                                vm.calendars.filter { it.writable }.forEach {
-                                    DropdownMenuItem(text = { Text(it.name) }, onClick = { calendarId = it.id; calendarMenu = false })
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        item {
+                            OutlinedTextField(
+                                title,
+                                { title = it },
+                                label = { Text("Título") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                        }
+                        item {
+                            Box {
+                                OutlinedButton(
+                                    onClick = { calendarMenu = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(18.dp)
+                                ) {
+                                    Text(
+                                        vm.calendars.firstOrNull { it.id == calendarId }
+                                            ?.let { "${it.name} · ${it.account}" } ?: "Calendario",
+                                        Modifier.weight(1f),
+                                        textAlign = TextAlign.Start
+                                    )
+                                    Icon(Icons.Rounded.ExpandMore, null)
+                                }
+                                DropdownMenu(
+                                    expanded = calendarMenu,
+                                    onDismissRequest = { calendarMenu = false }
+                                ) {
+                                    vm.calendars.filter { it.writable }.forEach {
+                                        DropdownMenuItem(
+                                            text = { Text(it.name) },
+                                            onClick = {
+                                                calendarId = it.id
+                                                calendarMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                    item {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Todo el día", fontWeight = FontWeight.Medium)
-                                Text("Sin hora de inicio ni fin", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                            }
-                            Switch(checked = allDay, onCheckedChange = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); allDay = it })
-                        }
-                    }
-                    item {
-                        OutlinedButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                                showDatePicker = true
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(18.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
-                        ) {
-                            Icon(Icons.Rounded.CalendarMonth, contentDescription = null)
-                            Spacer(Modifier.width(12.dp))
-                            Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                                Text("Fecha", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                                Text(
-                                    startDate.format(DateTimeFormatter.ofPattern("EEEE, d 'de' MMMM 'de' yyyy", esLocale))
-                                        .replaceFirstChar { it.uppercase(esLocale) },
-                                    fontWeight = FontWeight.Medium
+                        item {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("Todo el día", fontWeight = FontWeight.Medium)
+                                    Text(
+                                        "Sin hora de inicio ni fin",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Switch(
+                                    checked = allDay,
+                                    onCheckedChange = {
+                                        haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                        allDay = it
+                                    }
                                 )
                             }
-                            Icon(Icons.Rounded.ExpandMore, contentDescription = "Seleccionar fecha")
                         }
-                    }
-                    if (!allDay) {
                         item {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(startHour.toString().padStart(2, '0'), { startHour = it.toIntOrNull()?.coerceIn(0, 23) ?: startHour }, label = { Text("Hora") }, singleLine = true, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
-                                OutlinedTextField(startMinute.toString().padStart(2, '0'), { startMinute = it.toIntOrNull()?.coerceIn(0, 59) ?: startMinute }, label = { Text("Min") }, singleLine = true, modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp))
-                                OutlinedTextField(duration.toString(), { duration = it.toIntOrNull()?.coerceAtLeast(1) ?: duration }, label = { Text("Duración") }, singleLine = true, modifier = Modifier.weight(1.25f), shape = RoundedCornerShape(18.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                    showDatePicker = true
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
+                            ) {
+                                Icon(Icons.Rounded.CalendarMonth, contentDescription = null)
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                                    Text("Fecha", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                                    Text(
+                                        startDate.format(
+                                            DateTimeFormatter.ofPattern(
+                                                "EEEE, d 'de' MMMM 'de' yyyy",
+                                                esLocale
+                                            )
+                                        ).replaceFirstChar { it.uppercase(esLocale) },
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                                Icon(Icons.Rounded.ExpandMore, contentDescription = "Seleccionar fecha")
                             }
                         }
-                    }
-                    item { OutlinedTextField(location, { location = it }, label = { Text("Ubicación") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(description, { description = it }, label = { Text("Descripción") }, minLines = 3, maxLines = 5, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(attendees, { attendees = it }, label = { Text("Invitados · emails separados por coma") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(reminder.toString(), { reminder = it.toIntOrNull()?.coerceAtLeast(0) ?: reminder }, label = { Text("Recordatorio · minutos antes") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                    item { OutlinedTextField(recurrence, { recurrence = it }, label = { Text("Repetición · RRULE opcional") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (editing != null) {
-                        TextButton(onClick = { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); vm.delete(editing.id); closeEditor() }) { Text("Eliminar") }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { closeEditor() }) { Text("Cancelar") }
-                    Button(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            val zone = ZoneId.systemDefault()
-                            val start = if (allDay) startDate.atAllDayStartMillis() else startDate.atTime(startHour, startMinute).atZone(zone).toInstant().toEpochMilli()
-                            val end = if (allDay) startDate.atAllDayEndMillis() else start + duration * 60_000L
-                            val draft = EventDraft(
-                                title.ifBlank { "Sin título" }, calendarId, start, end, allDay, location, description,
-                                reminder, recurrence.ifBlank { null }, attendees.split(",").map { it.trim() }.filter { it.contains("@") }
+                        if (!allDay) {
+                            item {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        startHour.toString().padStart(2, '0'),
+                                        { startHour = it.toIntOrNull()?.coerceIn(0, 23) ?: startHour },
+                                        label = { Text("Hora") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(18.dp)
+                                    )
+                                    OutlinedTextField(
+                                        startMinute.toString().padStart(2, '0'),
+                                        { startMinute = it.toIntOrNull()?.coerceIn(0, 59) ?: startMinute },
+                                        label = { Text("Min") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(18.dp)
+                                    )
+                                    OutlinedTextField(
+                                        duration.toString(),
+                                        { duration = it.toIntOrNull()?.coerceAtLeast(1) ?: duration },
+                                        label = { Text("Duración") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1.25f),
+                                        shape = RoundedCornerShape(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                        item {
+                            OutlinedTextField(
+                                location,
+                                { location = it },
+                                label = { Text("Ubicación") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
                             )
-                            if (editing == null) vm.create(draft) else vm.update(editing.id, draft)
-                            editorVisible = false
-                            onSaved()
-                        },
-                        enabled = title.isNotBlank() && calendarId >= 0 && vm.calendars.any { it.id == calendarId && it.writable },
-                        shape = RoundedCornerShape(18.dp)
-                    ) { Text(if (editing == null) "Crear" else "Guardar") }
-                }
+                        }
+                        item {
+                            OutlinedTextField(
+                                description,
+                                { description = it },
+                                label = { Text("Descripción") },
+                                minLines = 3,
+                                maxLines = 5,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                        }
+                        item {
+                            OutlinedTextField(
+                                attendees,
+                                { attendees = it },
+                                label = { Text("Invitados · emails separados por coma") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                        }
+                        item {
+                            OutlinedTextField(
+                                reminder.toString(),
+                                { reminder = it.toIntOrNull()?.coerceAtLeast(0) ?: reminder },
+                                label = { Text("Recordatorio · minutos antes") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                        }
+                        item {
+                            OutlinedTextField(
+                                recurrence,
+                                { recurrence = it },
+                                label = { Text("Repetición · RRULE opcional") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (editing != null) {
+                            TextButton(onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                vm.delete(editing.id)
+                                closeEditor()
+                            }) { Text("Eliminar") }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { closeEditor() }) { Text("Cancelar") }
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                val zone = ZoneId.systemDefault()
+                                val start = if (allDay) {
+                                    startDate.atAllDayStartMillis()
+                                } else {
+                                    startDate.atTime(startHour, startMinute)
+                                        .atZone(zone).toInstant().toEpochMilli()
+                                }
+                                val end = if (allDay) {
+                                    startDate.atAllDayEndMillis()
+                                } else {
+                                    start + duration * 60_000L
+                                }
+                                val draft = EventDraft(
+                                    title.ifBlank { "Sin título" },
+                                    calendarId,
+                                    start,
+                                    end,
+                                    allDay,
+                                    location,
+                                    description,
+                                    reminder,
+                                    recurrence.ifBlank { null },
+                                    attendees.split(",")
+                                        .map { it.trim() }
+                                        .filter { it.contains("@") }
+                                )
+                                if (editing == null) vm.create(draft) else vm.update(editing.id, draft)
+                                editorVisible = false
+                                onSaved()
+                            },
+                            enabled = title.isNotBlank() &&
+                                calendarId >= 0 &&
+                                vm.calendars.any { it.id == calendarId && it.writable },
+                            shape = RoundedCornerShape(18.dp)
+                        ) { Text(if (editing == null) "Crear" else "Guardar") }
+                    }
                 }
             }
         }
