@@ -291,21 +291,12 @@ fun CalendarScreen(vm: CalendarViewModel) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    AnimatedContent(
-                        targetState = title,
-                        transitionSpec = {
-                            (slideInVertically(tween(180, easing = FastOutSlowInEasing)) { it / 2 } +
-                                fadeIn(tween(140))) togetherWith
-                                (slideOutVertically(tween(140)) { -it / 3 } + fadeOut(tween(100)))
-                        },
-                        label = "calendar_title"
-                    ) { animatedTitle ->
-                        Text(
-                            animatedTitle,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
                     Text(
                         "${date.dayOfMonth} de ${date.month.getDisplayName(DateTextStyle.FULL, esLocale)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -415,29 +406,30 @@ fun MonthView(
     onEvent: (CalendarEvent) -> Unit
 ) {
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
-    val haptic = LocalView.current
+    val view = LocalView.current
+    val scheme = MaterialTheme.colorScheme
 
-    // Pre-calculate the 42 cells only when the month changes. There is no
-    // AnimatedContent here: it used to keep two complete month grids alive
-    // during the transition and was the main source of stutter on this screen.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
-        buildList {
-            repeat(leading) { index ->
-                add(first.minusDays((leading - index).toLong()))
-            }
-            for (day in 1..month.lengthOfMonth()) {
-                add(month.withDayOfMonth(day))
-            }
+        buildList(42) {
+            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
+            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
             while (size < 42) add(last().plusDays(1))
         }
     }
 
-    // All indexing was already done on Dispatchers.IO by the ViewModel.
-    // Month only performs O(1) map lookups while it composes its 42 cells.
-    val eventDots = eventDotsByDate
-    val selectedDayEvents = eventsByDate[date].orEmpty()
+    val monthTitle = remember(month) {
+        month.month.getDisplayName(DateTextStyle.FULL, esLocale)
+            .replaceFirstChar { it.uppercase(esLocale) } + " ${month.year}"
+    }
+
+    fun moveMonth(delta: Long) {
+        val next = month.plusMonths(delta)
+        month = next
+        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        onDate(next)
+    }
 
     Column(
         Modifier
@@ -448,16 +440,8 @@ fun MonthView(
                     onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
                     onDragEnd = {
                         when {
-                            dragTotal > 70f -> {
-                                haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                month = month.minusMonths(1)
-                                onDate(month)
-                            }
-                            dragTotal < -70f -> {
-                                haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                month = month.plusMonths(1)
-                                onDate(month)
-                            }
+                            dragTotal > 70f -> moveMonth(-1)
+                            dragTotal < -70f -> moveMonth(1)
                         }
                         dragTotal = 0f
                     },
@@ -465,103 +449,91 @@ fun MonthView(
                 )
             }
     ) {
+        // Lightweight month header: no AnimatedContent and no recomposition-heavy effects.
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier.fillMaxWidth().height(44.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    month = month.minusMonths(1)
-                    onDate(month)
-                },
-                modifier = Modifier.size(40.dp)
-            ) {
+            IconButton(onClick = { moveMonth(-1) }, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
             }
-
             Text(
-                "${month.month.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${month.year}",
+                monthTitle,
                 Modifier.weight(1f),
+                textAlign = TextAlign.Center,
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp,
-                textAlign = TextAlign.Center
+                maxLines = 1
             )
-
-            IconButton(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    month = month.plusMonths(1)
-                    onDate(month)
-                },
-                modifier = Modifier.size(40.dp)
-            ) {
+            IconButton(onClick = { moveMonth(1) }, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", modifier = Modifier.size(20.dp))
             }
         }
 
-        Row(Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 3.dp)) {
-            listOf("L", "M", "X", "J", "V", "S", "D").forEach { dayName ->
-                Text(
-                    dayName,
-                    Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp
-                )
+        Row(
+            Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            WEEK_DAYS.forEach { dayName ->
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text(dayName, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                }
             }
         }
 
-        // Fixed 6 x 7 grid. No lazy layout and no animated double-buffering:
-        // 42 lightweight cells are cheaper and much more stable here.
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            days.chunked(7).forEach { week ->
+        // Exactly 42 cells, but each cell is deliberately flat: one Box + one Text
+        // and at most three tiny dots. No Canvas, LazyGrid, nested Column or animation.
+        Column(Modifier.fillMaxWidth()) {
+            repeat(6) { rowIndex ->
                 Row(Modifier.fillMaxWidth().height(45.dp)) {
-                    week.forEach { day ->
+                    repeat(7) { colIndex ->
+                        val day = days[rowIndex * 7 + colIndex]
                         val selected = day == date
-                        val colors = eventDots[day].orEmpty()
+                        val dots = eventDotsByDate[day].orEmpty()
+                        val outside = day.month != month.month
 
-                        Column(
+                        Box(
                             Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .padding(horizontal = 1.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (selected) MaterialTheme.colorScheme.primaryContainer
-                                    else Color.Transparent
-                                )
+                                .padding(1.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(if (selected) scheme.primaryContainer else Color.Transparent)
                                 .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                                     onDate(day)
-                                }
-                                .padding(top = 3.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                day.dayOfMonth.toString(),
-                                color = when {
-                                    selected -> MaterialTheme.colorScheme.onPrimaryContainer
-                                    day.month != month.month -> MaterialTheme.colorScheme.outline
-                                    else -> MaterialTheme.colorScheme.onSurface
                                 },
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                fontSize = 13.sp
-                            )
-
-                            Row(
-                                Modifier.height(8.dp),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                colors.forEach { color ->
-                                    Box(
-                                        Modifier
-                                            .padding(horizontal = 1.dp)
-                                            .size(4.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(color))
-                                    )
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    day.dayOfMonth.toString(),
+                                    color = when {
+                                        selected -> scheme.onPrimaryContainer
+                                        outside -> scheme.outline
+                                        else -> scheme.onSurface
+                                    },
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 13.sp,
+                                    maxLines = 1
+                                )
+                                if (dots.isNotEmpty()) {
+                                    Row(
+                                        Modifier.height(7.dp),
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        dots.take(3).forEach { color ->
+                                            Box(
+                                                Modifier
+                                                    .padding(horizontal = 1.dp)
+                                                    .size(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(color))
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Spacer(Modifier.height(7.dp))
                                 }
                             }
                         }
@@ -570,18 +542,18 @@ fun MonthView(
             }
         }
 
-        Spacer(Modifier.height(6.dp))
-
+        Spacer(Modifier.height(7.dp))
         Text(
             "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
-
         Spacer(Modifier.height(5.dp))
-        EventList(selectedDayEvents, onEvent)
+        EventList(eventsByDate[date].orEmpty(), onEvent)
     }
 }
+
+private val WEEK_DAYS = listOf("L", "M", "X", "J", "V", "S", "D")
 
 @Composable
 fun WeekView(
@@ -767,115 +739,62 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis)
 
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
-    val hapticView = LocalView.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    val items = listOf(
-        CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
-        CalendarView.AGENDA to ("Agenda" to Icons.Rounded.ViewAgenda),
-        CalendarView.MONTH to ("Mes" to Icons.Rounded.CalendarMonth),
-        CalendarView.WEEK to ("Semana" to Icons.Rounded.ViewWeek)
-    )
-
-    val selectedIndex = items.indexOfFirst { it.first == view }.coerceAtLeast(0)
-
-    BoxWithConstraints(
-        modifier = Modifier
+    val haptic = LocalView.current
+    Box(
+        Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 8.dp, vertical = 8.dp)
+            .padding(horizontal = 14.dp, bottom = 10.dp),
+        contentAlignment = Alignment.Center
     ) {
-        val outerPadding = 6.dp
-        val indicatorWidth = 100.dp
-        val indicatorHeight = 48.dp
-        val contentWidth = maxWidth - outerPadding * 2
-        val slotWidth = contentWidth / 4f
-        val targetOffset = outerPadding + slotWidth * selectedIndex + (slotWidth - indicatorWidth) / 2f
-        val targetOffsetPx = with(density) { targetOffset.toPx() }
-        val animatedOffsetPx by androidx.compose.animation.core.animateFloatAsState(
-            targetValue = targetOffsetPx,
-            animationSpec = tween(190, easing = FastOutSlowInEasing),
-            label = "nav_indicator_x"
-        )
-
-        Surface(
-            modifier = Modifier.fillMaxWidth().height(72.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            shape = RoundedCornerShape(36.dp)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(72.dp)
+                .clip(RoundedCornerShape(36.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterStart)
-                        .graphicsLayer { translationX = animatedOffsetPx }
-                        .width(indicatorWidth)
-                        .height(indicatorHeight)
-                        .clip(RoundedCornerShape(26.dp))
-                        .background(MaterialTheme.colorScheme.secondaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val (label, icon) = items[selectedIndex].second
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = label,
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(26.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            text = label,
-                            fontSize = 12.sp,
-                            lineHeight = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = outerPadding, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    items.forEachIndexed { index, (destination, data) ->
-                        val (label, icon) = data
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(26.dp))
-                                .clickable(
-                                    interactionSource = interactionSource,
-                                    indication = null
-                                ) {
-                                    if (destination != view) {
-                                        hapticView.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                                        onView(destination)
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = label,
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier
-                                    .size(26.dp)
-                                    .graphicsLayer {
-                                        alpha = if (index == selectedIndex) 0f else 1f
-                                    }
-                            )
-                        }
-                    }
-                }
+            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.DAY) }
+            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.AGENDA) }
+            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.MONTH) }
+            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.WEEK) }
+        }
+    }
+}
+
+@Composable
+fun RowScope.NavItem(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(30.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Row(
+                Modifier
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .padding(horizontal = 13.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
+                Spacer(Modifier.width(7.dp))
+                Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 1)
             }
+        } else {
+            Icon(icon, label, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(25.dp))
         }
     }
 }
