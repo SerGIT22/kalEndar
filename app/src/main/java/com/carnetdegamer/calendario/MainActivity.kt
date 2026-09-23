@@ -860,6 +860,7 @@ fun RowScope.NavItem(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EventEditorDialog(
     vm: CalendarViewModel,
