@@ -18,6 +18,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
@@ -291,12 +292,25 @@ fun CalendarScreen(vm: CalendarViewModel) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
-                    )
+                    AnimatedContent(
+                        targetState = title,
+                        transitionSpec = {
+                            (slideInVertically(
+                                animationSpec = tween(180, easing = FastOutSlowInEasing)
+                            ) { it / 2 } + fadeIn(tween(140))) togetherWith
+                                (slideOutVertically(
+                                    animationSpec = tween(140)
+                                ) { -it / 3 } + fadeOut(tween(100)))
+                        },
+                        label = "calendar_title"
+                    ) { animatedTitle ->
+                        Text(
+                            animatedTitle,
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
                     Text(
                         "${date.dayOfMonth} de ${date.month.getDisplayName(DateTextStyle.FULL, esLocale)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -744,7 +758,7 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
+            .padding(horizontal = 14.dp, bottom = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -771,30 +785,69 @@ fun RowScope.NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    // The selected item gets a little more room so long labels such as
+    // "Semana" never get clipped. Both the old and new item animate their
+    // width, making the selected capsule slide smoothly between tabs.
+    val animatedWeight by animateFloatAsState(
+        targetValue = if (selected) 1.35f else 0.8833f,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = 700f
+        ),
+        label = "nav_weight_$label"
+    )
+
     Box(
         Modifier
-            .weight(1f)
+            .weight(animatedWeight)
             .fillMaxHeight()
             .clip(RoundedCornerShape(30.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        if (selected) {
-            Row(
-                Modifier
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(horizontal = 13.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
-                Spacer(Modifier.width(7.dp))
-                Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer, maxLines = 1)
+        AnimatedContent(
+            targetState = selected,
+            transitionSpec = {
+                (fadeIn(tween(130)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
+                    (fadeOut(tween(90)) + scaleOut(tween(110), targetScale = 0.92f))
+            },
+            label = "nav_content_$label"
+        ) { isSelected ->
+            if (isSelected) {
+                Row(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        icon,
+                        null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            } else {
+                Icon(
+                    icon,
+                    label,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(25.dp)
+                )
             }
-        } else {
-            Icon(icon, label, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(25.dp))
         }
     }
 }
