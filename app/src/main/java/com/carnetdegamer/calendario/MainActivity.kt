@@ -284,7 +284,7 @@ fun CalendarScreen(vm: CalendarViewModel) {
     }
 
     // Separate FAB: deliberately outside the bottom navigation, matching the requested Pixel/Material Expressive layout.
-    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 16.dp, bottom = 66.dp), contentAlignment = Alignment.BottomEnd) {
+    Box(Modifier.fillMaxSize().navigationBarsPadding().padding(end = 16.dp, bottom = 106.dp), contentAlignment = Alignment.BottomEnd) {
         FloatingActionButton(
             onClick = {
                 haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
@@ -635,37 +635,45 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDe
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
 
-    Surface(
+    // Floating pill inspired by Google Photos: it does not touch the screen
+    // edges or the navigation area, and keeps the original taller height.
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .height(56.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 1.dp,
-        shadowElevation = 0.dp,
-        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
+            .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
-        Row(
-            Modifier
-                .fillMaxSize()
-                .padding(horizontal = 4.dp, vertical = 3.dp),
-            verticalAlignment = Alignment.CenterVertically
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(72.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            tonalElevation = 2.dp,
+            shadowElevation = 2.dp,
+            shape = RoundedCornerShape(32.dp)
         ) {
-            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.DAY)
-            }
-            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.AGENDA)
-            }
-            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.MONTH)
-            }
-            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.WEEK)
+            Row(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onView(CalendarView.DAY)
+                }
+                NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onView(CalendarView.AGENDA)
+                }
+                NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onView(CalendarView.MONTH)
+                }
+                NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    onView(CalendarView.WEEK)
+                }
             }
         }
     }
@@ -689,33 +697,47 @@ fun RowScope.NavItem(
         MaterialTheme.colorScheme.onSurface
     }
 
-    Column(
-        Modifier
+    Box(
+        modifier = Modifier
             .weight(1f)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(28.dp))
             .clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .height(23.dp)
-                .fillMaxWidth(0.48f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(indicatorColor),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, null, tint = iconColor, modifier = Modifier.size(18.dp))
+        if (selected) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(indicatorColor)
+                    .padding(horizontal = 15.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = label,
+                    tint = iconColor,
+                    modifier = Modifier.size(25.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    label,
+                    fontSize = 12.sp,
+                    lineHeight = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = iconColor,
+                    maxLines = 1
+                )
+            }
+        } else {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = iconColor,
+                modifier = Modifier.size(25.dp)
+            )
         }
-        Text(
-            label,
-            fontSize = 9.sp,
-            lineHeight = 10.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-            color = iconColor,
-            maxLines = 1
-        )
     }
 }
 
