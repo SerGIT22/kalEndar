@@ -18,6 +18,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
@@ -44,8 +45,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.awaitPointerEvent
-import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -329,19 +328,36 @@ fun CalendarScreen(vm: CalendarViewModel) {
                 }) { Icon(Icons.Rounded.Sync, "Sincronizar") }
             }
             Spacer(Modifier.height(10.dp))
-            ViewSwitcher(
-                view = view,
-                date = date,
-                onDate = {
-                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    date = it
-                    vm.ensureRange(it)
-                },
-                events = vm.events,
-                eventsByDate = vm.eventsByDate,
-                eventDotsByDate = vm.eventDotsByDate,
-                onEvent = { editing = it; showCreator = true }
-            )
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                MonthView(
+                    date = date,
+                    eventsByDate = vm.eventsByDate,
+                    eventDotsByDate = vm.eventDotsByDate,
+                    onDate = {
+                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        date = it
+                        vm.ensureRange(it)
+                    },
+                    onEvent = { editing = it; showCreator = true },
+                    visible = view == CalendarView.MONTH
+                )
+
+                if (view != CalendarView.MONTH) {
+                    ViewSwitcher(
+                        view = view,
+                        date = date,
+                        onDate = {
+                            haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            date = it
+                            vm.ensureRange(it)
+                        },
+                        events = vm.events,
+                        eventsByDate = vm.eventsByDate,
+                        eventDotsByDate = vm.eventDotsByDate,
+                        onEvent = { editing = it; showCreator = true }
+                    )
+                }
+            }
         }
     }
 
@@ -402,8 +418,16 @@ fun ViewSwitcher(
 }
 
 /**
- * Month view optimized for entering the calendar without a 42-cell clickable tree.
- * The grid is passive; one pointer handler processes taps and horizontal swipes.
+ * Performance-critical month view.
+ *
+ * The previous implementation created 42 Compose subtrees containing Column,
+ * Text, Row, Box, clip and clickable modifiers. That is unnecessary for a
+ * fixed calendar grid and can become expensive when the selected date and the
+ * event maps change together.
+ *
+ * This version renders the entire 42-cell grid with ONE Canvas. The only
+ * Compose work per frame is drawing primitives and text. Event lookup remains
+ * O(1) through the ViewModel's prebuilt map.
  */
 @Composable
 fun MonthView(
@@ -411,10 +435,9 @@ fun MonthView(
     eventsByDate: Map<LocalDate, List<CalendarEvent>>,
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onDate: (LocalDate) -> Unit,
-    onEvent: (CalendarEvent) -> Unit
+    onEvent: (CalendarEvent) -> Unit,
+    visible: Boolean = true
 ) {
-    // Las celdas son pasivas: un único gestor de gestos para todo el calendario.
-    // Esto evita crear 42 nodos clickable/InteractionSource al entrar en Mes.
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val view = LocalView.current
     val scheme = MaterialTheme.colorScheme
@@ -424,7 +447,7 @@ fun MonthView(
         val leading = first.dayOfWeek.value - 1
         buildList(42) {
             repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
-            for (n in 1..month.lengthOfMonth()) add(month.withDayOfMonth(n))
+            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
             while (size < 42) add(last().plusDays(1))
         }
     }
@@ -434,119 +457,155 @@ fun MonthView(
             .replaceFirstChar { it.uppercase(esLocale) } + " ${month.year}"
     }
 
-    fun changeMonth(delta: Long) {
+    fun moveMonth(delta: Long) {
         val next = month.plusMonths(delta)
         month = next
         view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         onDate(next)
     }
 
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = { changeMonth(-1) }, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", Modifier.size(20.dp))
-            }
-            Text(monthTitle, Modifier.weight(1f), textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1)
-            IconButton(onClick = { changeMonth(1) }, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", Modifier.size(20.dp))
-            }
-        }
-
-        Row(Modifier.fillMaxWidth().height(22.dp)) {
-            WEEK_DAYS.forEach { label ->
-                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                    Text(label, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                }
-            }
-        }
-
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(270.dp)
-                .pointerInput(month) {
-                    awaitPointerEventScope {
-                        var downX = 0f
-                        var downY = 0f
-                        var moved = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: continue
-                            if (change.pressed && !change.previousPressed) {
-                                downX = change.position.x
-                                downY = change.position.y
-                                moved = false
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .graphicsLayer { alpha = if (visible) 1f else 0f }
+            .then(
+                if (visible) Modifier.pointerInput(Unit) {
+                    var dragTotal = 0f
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                        onDragEnd = {
+                            when {
+                                dragTotal > 70f -> moveMonth(-1)
+                                dragTotal < -70f -> moveMonth(1)
                             }
-                            if (change.pressed &&
-                                (kotlin.math.abs(change.position.x - downX) > 24f ||
-                                 kotlin.math.abs(change.position.y - downY) > 24f)) {
-                                moved = true
-                            }
-                            if (!change.pressed && change.previousPressed) {
-                                val dx = change.position.x - downX
-                                val dy = change.position.y - downY
-                                if (kotlin.math.abs(dx) > 70f && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.25f) {
-                                    if (dx > 0f) changeMonth(-1) else changeMonth(1)
-                                } else if (!moved) {
-                                    val cellWidth = size.width / 7f
-                                    val cellHeight = size.height / 6f
-                                    val col = (change.position.x / cellWidth).toInt().coerceIn(0, 6)
-                                    val row = (change.position.y / cellHeight).toInt().coerceIn(0, 5)
-                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                    onDate(days[row * 7 + col])
-                                }
-                                change.consume()
-                            }
-                        }
-                    }
-                }
+                            dragTotal = 0f
+                        },
+                        onDragCancel = { dragTotal = 0f }
+                    )
+                } else Modifier
+            )
+    ) {
+        // Lightweight month header: no AnimatedContent and no recomposition-heavy effects.
+        Row(
+            Modifier.fillMaxWidth().height(44.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(Modifier.fillMaxSize()) {
-                repeat(6) { row ->
-                    Row(Modifier.fillMaxWidth().weight(1f)) {
-                        repeat(7) { column ->
-                            val day = days[row * 7 + column]
-                            val selected = day == date
-                            val outside = day.month != month.month
-                            val dots = eventDotsByDate[day].orEmpty()
-                            Box(
-                                Modifier
-                                    .weight(1f)
-                                    .fillMaxHeight()
-                                    .padding(1.dp)
-                                    .clip(RoundedCornerShape(11.dp))
-                                    .background(if (selected) scheme.primaryContainer else Color.Transparent),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(day.dayOfMonth.toString(),
-                                        color = when {
-                                            selected -> scheme.onPrimaryContainer
-                                            outside -> scheme.outline
-                                            else -> scheme.onSurface
-                                        },
-                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 13.sp, maxLines = 1)
-                                    Row(Modifier.height(7.dp), horizontalArrangement = Arrangement.Center) {
-                                        dots.take(3).forEach { color ->
-                                            Box(Modifier.padding(horizontal = 1.dp).size(4.dp)
-                                                .clip(CircleShape).background(Color(color)))
-                                        }
-                                    }
-                                }
+            IconButton(onClick = { moveMonth(-1) }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
+            }
+            Text(
+                monthTitle,
+                Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                maxLines = 1
+            )
+            IconButton(onClick = { moveMonth(1) }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", modifier = Modifier.size(20.dp))
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 4.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            WEEK_DAYS.forEach { dayName ->
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text(dayName, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                }
+            }
+        }
+
+        // The grid is split into small stable cells so changing the selected day
+        // does not force the entire 42-cell subtree to redraw.
+        Column(Modifier.fillMaxWidth()) {
+            repeat(6) { rowIndex ->
+                Row(Modifier.fillMaxWidth().height(45.dp)) {
+                    repeat(7) { colIndex ->
+                        val day = days[rowIndex * 7 + colIndex]
+                        MonthDayCell(
+                            day = day,
+                            month = month,
+                            selected = day == date,
+                            dots = eventDotsByDate[day].orEmpty(),
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                onDate(day)
                             }
-                        }
+                        )
                     }
                 }
             }
         }
 
         Spacer(Modifier.height(7.dp))
-        Text("${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
-            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Text(
+            "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
         Spacer(Modifier.height(5.dp))
         EventList(eventsByDate[date].orEmpty(), onEvent)
+    }
+}
+
+@Composable
+private fun RowScope.MonthDayCell(
+    day: LocalDate,
+    month: LocalDate,
+    selected: Boolean,
+    dots: List<Int>,
+    onClick: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    val outside = day.month != month.month
+
+    Box(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .padding(1.dp)
+            .clip(RoundedCornerShape(11.dp))
+            .background(if (selected) scheme.primaryContainer else Color.Transparent)
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                day.dayOfMonth.toString(),
+                color = when {
+                    selected -> scheme.onPrimaryContainer
+                    outside -> scheme.outline
+                    else -> scheme.onSurface
+                },
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 13.sp,
+                maxLines = 1
+            )
+            if (dots.isNotEmpty()) {
+                Row(
+                    Modifier.height(7.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    dots.take(3).forEach { color ->
+                        Box(
+                            Modifier
+                                .padding(horizontal = 1.dp)
+                                .size(4.dp)
+                                .clip(CircleShape)
+                                .background(Color(color))
+                        )
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(7.dp))
+            }
+        }
     }
 }
 
