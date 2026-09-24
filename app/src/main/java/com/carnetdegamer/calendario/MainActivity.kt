@@ -386,17 +386,27 @@ fun ViewSwitcher(
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    when (view) {
-        CalendarView.MONTH -> MonthView(
-            date,
-            eventsByDate,
-            eventDotsByDate,
-            onDate,
-            onEvent
+    // Keep MonthView mounted so switching to Mes does not pay the full
+    // 42-cell composition cost on the click frame. The view is still fully
+    // transparent while another tab is active, and therefore does not alter
+    // the visible UI or the bottom-bar animation.
+    Box(Modifier.fillMaxWidth()) {
+        MonthView(
+            date = date,
+            eventsByDate = eventsByDate,
+            eventDotsByDate = eventDotsByDate,
+            onDate = onDate,
+            onEvent = onEvent,
+            modifier = Modifier.graphicsLayer { alpha = if (view == CalendarView.MONTH) 1f else 0f },
+            interactive = view == CalendarView.MONTH
         )
-        CalendarView.WEEK -> WeekView(date, eventsByDate, onDate, onEvent)
-        CalendarView.DAY -> DayView(date, eventsByDate, onEvent)
-        CalendarView.AGENDA -> AgendaView(date, events, onEvent)
+
+        when (view) {
+            CalendarView.MONTH -> Unit
+            CalendarView.WEEK -> WeekView(date, eventsByDate, onDate, onEvent)
+            CalendarView.DAY -> DayView(date, eventsByDate, onEvent)
+            CalendarView.AGENDA -> AgendaView(date, events, onEvent)
+        }
     }
 }
 
@@ -418,7 +428,9 @@ fun MonthView(
     eventsByDate: Map<LocalDate, List<CalendarEvent>>,
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onDate: (LocalDate) -> Unit,
-    onEvent: (CalendarEvent) -> Unit
+    onEvent: (CalendarEvent) -> Unit,
+    modifier: Modifier = Modifier,
+    interactive: Boolean = true
 ) {
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val view = LocalView.current
@@ -446,23 +458,27 @@ fun MonthView(
         onDate(next)
     }
 
+    val gestureModifier = if (interactive) {
+        Modifier.pointerInput(Unit) {
+            var dragTotal = 0f
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                onDragEnd = {
+                    when {
+                        dragTotal > 70f -> moveMonth(-1)
+                        dragTotal < -70f -> moveMonth(1)
+                    }
+                    dragTotal = 0f
+                },
+                onDragCancel = { dragTotal = 0f }
+            )
+        }
+    } else Modifier
+
     Column(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .pointerInput(Unit) {
-                var dragTotal = 0f
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                    onDragEnd = {
-                        when {
-                            dragTotal > 70f -> moveMonth(-1)
-                            dragTotal < -70f -> moveMonth(1)
-                        }
-                        dragTotal = 0f
-                    },
-                    onDragCancel = { dragTotal = 0f }
-                )
-            }
+            .then(gestureModifier)
     ) {
         // Lightweight month header: no AnimatedContent and no recomposition-heavy effects.
         Row(
@@ -496,23 +512,66 @@ fun MonthView(
             }
         }
 
-        // The grid is split into small stable cells so changing the selected day
-        // does not force the entire 42-cell subtree to redraw.
+        // Exactly 42 cells, but each cell is deliberately flat: one Box + one Text
+        // and at most three tiny dots. No Canvas, LazyGrid, nested Column or animation.
         Column(Modifier.fillMaxWidth()) {
             repeat(6) { rowIndex ->
                 Row(Modifier.fillMaxWidth().height(45.dp)) {
                     repeat(7) { colIndex ->
                         val day = days[rowIndex * 7 + colIndex]
-                        MonthDayCell(
-                            day = day,
-                            month = month,
-                            selected = day == date,
-                            dots = eventDotsByDate[day].orEmpty(),
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                onDate(day)
+                        val selected = day == date
+                        val dots = eventDotsByDate[day].orEmpty()
+                        val outside = day.month != month.month
+
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(1.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(if (selected) scheme.primaryContainer else Color.Transparent)
+                                .then(
+                                    if (interactive) {
+                                        Modifier.clickable {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                            onDate(day)
+                                        }
+                                    } else Modifier
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    day.dayOfMonth.toString(),
+                                    color = when {
+                                        selected -> scheme.onPrimaryContainer
+                                        outside -> scheme.outline
+                                        else -> scheme.onSurface
+                                    },
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 13.sp,
+                                    maxLines = 1
+                                )
+                                if (dots.isNotEmpty()) {
+                                    Row(
+                                        Modifier.height(7.dp),
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        dots.take(3).forEach { color ->
+                                            Box(
+                                                Modifier
+                                                    .padding(horizontal = 1.dp)
+                                                    .size(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(color))
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Spacer(Modifier.height(7.dp))
+                                }
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -526,65 +585,6 @@ fun MonthView(
         )
         Spacer(Modifier.height(5.dp))
         EventList(eventsByDate[date].orEmpty(), onEvent)
-    }
-}
-
-@Composable
-private fun RowScope.MonthDayCell(
-    day: LocalDate,
-    month: LocalDate,
-    selected: Boolean,
-    dots: List<Int>,
-    onClick: () -> Unit
-) {
-    val scheme = MaterialTheme.colorScheme
-    val outside = day.month != month.month
-
-    Box(
-        Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .padding(1.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .background(if (selected) scheme.primaryContainer else Color.Transparent)
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                day.dayOfMonth.toString(),
-                color = when {
-                    selected -> scheme.onPrimaryContainer
-                    outside -> scheme.outline
-                    else -> scheme.onSurface
-                },
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                fontSize = 13.sp,
-                maxLines = 1
-            )
-            if (dots.isNotEmpty()) {
-                Row(
-                    Modifier.height(7.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    dots.take(3).forEach { color ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = 1.dp)
-                                .size(4.dp)
-                                .clip(CircleShape)
-                                .background(Color(color))
-                        )
-                    }
-                }
-            } else {
-                Spacer(Modifier.height(7.dp))
-            }
-        }
     }
 }
 
