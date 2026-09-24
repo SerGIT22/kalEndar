@@ -18,7 +18,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
@@ -754,85 +753,87 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis)
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
-    Box(
+    val items = listOf(
+        CalendarView.DAY to ("Hoy" to Icons.Rounded.Today),
+        CalendarView.AGENDA to ("Agenda" to Icons.Rounded.ViewAgenda),
+        CalendarView.MONTH to ("Mes" to Icons.Rounded.CalendarMonth),
+        CalendarView.WEEK to ("Semana" to Icons.Rounded.ViewWeek)
+    )
+    val selectedIndex = items.indexOfFirst { it.first == view }.coerceAtLeast(0)
+
+    BoxWithConstraints(
         Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        Row(
+        val innerWidth = maxWidth - 12.dp
+        val slotWidth = innerWidth / 4f
+        val selectedLabel = items[selectedIndex].second.first
+        val selectedWidth = when (selectedLabel) {
+            "Semana" -> 92.dp
+            "Agenda" -> 88.dp
+            "Hoy" -> 76.dp
+            else -> 72.dp
+        }
+        val targetOffset = when (selectedIndex) {
+            0 -> 0.dp
+            items.lastIndex -> innerWidth - selectedWidth
+            else -> slotWidth * selectedIndex + (slotWidth - selectedWidth) / 2f
+        }
+        val animatedOffset by androidx.compose.animation.core.animateDpAsState(
+            targetValue = targetOffset,
+            animationSpec = androidx.compose.animation.core.spring(
+                dampingRatio = 0.82f,
+                stiffness = 520f
+            ),
+            label = "bottom_bar_indicator_offset"
+        )
+        val animatedWidth by androidx.compose.animation.core.animateDpAsState(
+            targetValue = selectedWidth,
+            animationSpec = androidx.compose.animation.core.spring(
+                dampingRatio = 0.88f,
+                stiffness = 600f
+            ),
+            label = "bottom_bar_indicator_width"
+        )
+
+        Box(
             Modifier
                 .fillMaxWidth()
                 .height(72.dp)
                 .clip(RoundedCornerShape(36.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(6.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(6.dp)
         ) {
-            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.DAY) }
-            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.AGENDA) }
-            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.MONTH) }
-            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.WEEK) }
-        }
-    }
-}
-
-@Composable
-fun RowScope.NavItem(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    // The selected item gets a little more room so long labels such as
-    // "Semana" never get clipped. Both the old and new item animate their
-    // width, making the selected capsule slide smoothly between tabs.
-    val animatedWeight by animateFloatAsState(
-        targetValue = if (selected) 1.35f else 0.8833f,
-        animationSpec = spring(
-            dampingRatio = 0.82f,
-            stiffness = 700f
-        ),
-        label = "nav_weight_$label"
-    )
-
-    Box(
-        Modifier
-            .weight(animatedWeight)
-            .fillMaxHeight()
-            .clip(RoundedCornerShape(30.dp))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        AnimatedContent(
-            targetState = selected,
-            transitionSpec = {
-                (fadeIn(tween(130)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
-                    (fadeOut(tween(90)) + scaleOut(tween(110), targetScale = 0.92f))
-            },
-            label = "nav_content_$label"
-        ) { isSelected ->
-            if (isSelected) {
+            // The four hit areas keep a fixed layout. Only the selected capsule
+            // moves, so switching tabs does not animate the Row's measurements.
+            Box(
+                Modifier
+                    .offset(x = animatedOffset)
+                    .width(animatedWidth)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
                 Row(
                     Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .fillMaxSize()
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        icon,
+                        items[selectedIndex].second.second,
                         null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        label,
+                        selectedLabel,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -840,13 +841,50 @@ fun RowScope.NavItem(
                         softWrap = false
                     )
                 }
-            } else {
-                Icon(
-                    icon,
-                    label,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(25.dp)
-                )
+            }
+
+            Row(
+                Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                items.forEach { (itemView, data) ->
+                    val selected = itemView == view
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(30.dp))
+                            .clickable {
+                                if (!selected) {
+                                    haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                                    onView(itemView)
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedContent(
+                            targetState = selected,
+                            transitionSpec = {
+                                (fadeIn(tween(150)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
+                                    (fadeOut(tween(100)) + scaleOut(tween(110), targetScale = 0.92f))
+                            },
+                            label = "bottom_bar_item_${data.first}"
+                        ) { isSelected ->
+                            if (!isSelected) {
+                                Icon(
+                                    data.second,
+                                    data.first,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(25.dp)
+                                )
+                            } else {
+                                // The actual selected content is drawn by the moving
+                                // capsule above; keep this slot transparent.
+                                Spacer(Modifier.size(1.dp))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
