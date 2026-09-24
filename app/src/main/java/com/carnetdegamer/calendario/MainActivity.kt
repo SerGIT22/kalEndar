@@ -18,10 +18,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -807,8 +809,6 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 .padding(6.dp)
         ) {
-            // The four hit areas keep a fixed layout. Only the selected capsule
-            // moves, so switching tabs does not animate the Row's measurements.
             Box(
                 Modifier
                     .offset(x = animatedOffset)
@@ -849,12 +849,16 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
             ) {
                 items.forEach { (itemView, data) ->
                     val selected = itemView == view
+                    val interactionSource = remember(itemView) { MutableInteractionSource() }
                     Box(
                         Modifier
                             .weight(1f)
                             .fillMaxHeight()
                             .clip(RoundedCornerShape(30.dp))
-                            .clickable {
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null
+                            ) {
                                 if (!selected) {
                                     haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
                                     onView(itemView)
@@ -862,26 +866,13 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        AnimatedContent(
-                            targetState = selected,
-                            transitionSpec = {
-                                (fadeIn(tween(150)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
-                                    (fadeOut(tween(100)) + scaleOut(tween(110), targetScale = 0.92f))
-                            },
-                            label = "bottom_bar_item_${data.first}"
-                        ) { isSelected ->
-                            if (!isSelected) {
-                                Icon(
-                                    data.second,
-                                    data.first,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(25.dp)
-                                )
-                            } else {
-                                // The actual selected content is drawn by the moving
-                                // capsule above; keep this slot transparent.
-                                Spacer(Modifier.size(1.dp))
-                            }
+                        if (!selected) {
+                            Icon(
+                                data.second,
+                                data.first,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(25.dp)
+                            )
                         }
                     }
                 }
@@ -889,6 +880,27 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
         }
     }
 }
+
+@Composable
+fun RowScope.NavItem(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    // Kept for compatibility with the rest of the file. The animated bottom
+    // bar above does not use this composable.
+    Box(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, label)
+    }
+}
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
