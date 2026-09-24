@@ -18,7 +18,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
@@ -420,17 +419,23 @@ fun MonthView(
     onDate: (LocalDate) -> Unit,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
+    var month by remember(date.year, date.month) {
+        mutableStateOf(date.withDayOfMonth(1))
+    }
     val view = LocalView.current
-    val scheme = MaterialTheme.colorScheme
 
-    // El mes se calcula una sola vez por cambio de mes. No hay Canvas ni LazyGrid.
+    // Se calcula una sola vez por mes. No hay Canvas, LazyGrid ni animaciones
+    // dentro de las celdas: el cambio de vista queda lo más barato posible.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
         buildList(42) {
-            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
-            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
+            repeat(leading) { index ->
+                add(first.minusDays((leading - index).toLong()))
+            }
+            for (dayNumber in 1..month.lengthOfMonth()) {
+                add(month.withDayOfMonth(dayNumber))
+            }
             while (size < 42) add(last().plusDays(1))
         }
     }
@@ -447,13 +452,34 @@ fun MonthView(
         onDate(next)
     }
 
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                var dragTotal = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, amount -> dragTotal += amount },
+                    onDragEnd = {
+                        when {
+                            dragTotal > 70f -> moveMonth(-1)
+                            dragTotal < -70f -> moveMonth(1)
+                        }
+                        dragTotal = 0f
+                    },
+                    onDragCancel = { dragTotal = 0f }
+                )
+            }
+    ) {
         Row(
             Modifier.fillMaxWidth().height(44.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = { moveMonth(-1) }, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.AutoMirrored.Rounded.ArrowBack,
+                    "Mes anterior",
+                    modifier = Modifier.size(20.dp)
+                )
             }
             Text(
                 monthTitle,
@@ -464,29 +490,53 @@ fun MonthView(
                 maxLines = 1
             )
             IconButton(onClick = { moveMonth(1) }, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.AutoMirrored.Rounded.ArrowForward,
+                    "Mes siguiente",
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 
         Row(
-            Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 1.dp, bottom = 4.dp)
         ) {
-            WEEK_DAYS.forEach { dayName ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    Text(dayName, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+            WEEK_DAYS.forEach { label ->
+                Box(
+                    Modifier.weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp
+                    )
                 }
             }
         }
 
-        Column(Modifier.fillMaxWidth()) {
-            repeat(6) { rowIndex ->
-                Row(Modifier.fillMaxWidth().height(45.dp)) {
-                    repeat(7) { colIndex ->
-                        val day = days[rowIndex * 7 + colIndex]
+        // Las 42 celdas son componentes muy pequeños y sin estado propio.
+        // Solo reciben los datos ya preparados por el ViewModel.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+        ) {
+            repeat(6) { row ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(45.dp)
+                ) {
+                    repeat(7) { column ->
+                        val index = row * 7 + column
+                        val day = days[index]
                         MonthDayCell(
                             day = day,
-                            month = month,
+                            currentMonth = month,
                             selected = day == date,
                             dots = eventDotsByDate[day].orEmpty(),
                             onClick = {
@@ -513,13 +563,13 @@ fun MonthView(
 @Composable
 private fun RowScope.MonthDayCell(
     day: LocalDate,
-    month: LocalDate,
+    currentMonth: LocalDate,
     selected: Boolean,
     dots: List<Int>,
     onClick: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
-    val outside = day.month != month.month
+    val outsideMonth = day.month != currentMonth.month
 
     Box(
         Modifier
@@ -527,7 +577,9 @@ private fun RowScope.MonthDayCell(
             .fillMaxHeight()
             .padding(1.dp)
             .clip(RoundedCornerShape(11.dp))
-            .background(if (selected) scheme.primaryContainer else Color.Transparent)
+            .background(
+                if (selected) scheme.primaryContainer else Color.Transparent
+            )
             .clickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
@@ -537,33 +589,30 @@ private fun RowScope.MonthDayCell(
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                day.dayOfMonth.toString(),
+                text = day.dayOfMonth.toString(),
                 color = when {
                     selected -> scheme.onPrimaryContainer
-                    outside -> scheme.outline
+                    outsideMonth -> scheme.outline
                     else -> scheme.onSurface
                 },
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                 fontSize = 13.sp,
                 maxLines = 1
             )
-            if (dots.isNotEmpty()) {
-                Row(
-                    Modifier.height(7.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    dots.take(3).forEach { color ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = 1.dp)
-                                .size(4.dp)
-                                .clip(CircleShape)
-                                .background(Color(color))
-                        )
-                    }
+
+            Row(
+                Modifier.height(7.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                dots.take(3).forEach { color ->
+                    Box(
+                        Modifier
+                            .padding(horizontal = 1.dp)
+                            .size(4.dp)
+                            .clip(CircleShape)
+                            .background(Color(color))
+                    )
                 }
-            } else {
-                Spacer(Modifier.height(7.dp))
             }
         }
     }
