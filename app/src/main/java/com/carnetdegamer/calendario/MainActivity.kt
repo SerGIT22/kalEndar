@@ -44,6 +44,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.awaitPointerEvent
+import androidx.compose.ui.input.pointer.awaitPointerEventScope
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -400,16 +402,8 @@ fun ViewSwitcher(
 }
 
 /**
- * Performance-critical month view.
- *
- * The previous implementation created 42 Compose subtrees containing Column,
- * Text, Row, Box, clip and clickable modifiers. That is unnecessary for a
- * fixed calendar grid and can become expensive when the selected date and the
- * event maps change together.
- *
- * This version renders the entire 42-cell grid with ONE Canvas. The only
- * Compose work per frame is drawing primitives and text. Event lookup remains
- * O(1) through the ViewModel's prebuilt map.
+ * Month view optimized for entering the calendar without a 42-cell clickable tree.
+ * The grid is passive; one pointer handler processes taps and horizontal swipes.
  */
 @Composable
 fun MonthView(
@@ -419,23 +413,18 @@ fun MonthView(
     onDate: (LocalDate) -> Unit,
     onEvent: (CalendarEvent) -> Unit
 ) {
-    var month by remember(date.year, date.month) {
-        mutableStateOf(date.withDayOfMonth(1))
-    }
+    // Las celdas son pasivas: un único gestor de gestos para todo el calendario.
+    // Esto evita crear 42 nodos clickable/InteractionSource al entrar en Mes.
+    var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val view = LocalView.current
+    val scheme = MaterialTheme.colorScheme
 
-    // Se calcula una sola vez por mes. No hay Canvas, LazyGrid ni animaciones
-    // dentro de las celdas: el cambio de vista queda lo más barato posible.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
         buildList(42) {
-            repeat(leading) { index ->
-                add(first.minusDays((leading - index).toLong()))
-            }
-            for (dayNumber in 1..month.lengthOfMonth()) {
-                add(month.withDayOfMonth(dayNumber))
-            }
+            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
+            for (n in 1..month.lengthOfMonth()) add(month.withDayOfMonth(n))
             while (size < 42) add(last().plusDays(1))
         }
     }
@@ -445,176 +434,119 @@ fun MonthView(
             .replaceFirstChar { it.uppercase(esLocale) } + " ${month.year}"
     }
 
-    fun moveMonth(delta: Long) {
+    fun changeMonth(delta: Long) {
         val next = month.plusMonths(delta)
         month = next
         view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
         onDate(next)
     }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .pointerInput(Unit) {
-                var dragTotal = 0f
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, amount -> dragTotal += amount },
-                    onDragEnd = {
-                        when {
-                            dragTotal > 70f -> moveMonth(-1)
-                            dragTotal < -70f -> moveMonth(1)
-                        }
-                        dragTotal = 0f
-                    },
-                    onDragCancel = { dragTotal = 0f }
-                )
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { changeMonth(-1) }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Mes anterior", Modifier.size(20.dp))
             }
-    ) {
-        Row(
-            Modifier.fillMaxWidth().height(44.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = { moveMonth(-1) }, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.ArrowBack,
-                    "Mes anterior",
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-            Text(
-                monthTitle,
-                Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-                fontWeight = FontWeight.Bold,
-                fontSize = 17.sp,
-                maxLines = 1
-            )
-            IconButton(onClick = { moveMonth(1) }, modifier = Modifier.size(40.dp)) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.ArrowForward,
-                    "Mes siguiente",
-                    modifier = Modifier.size(20.dp)
-                )
+            Text(monthTitle, Modifier.weight(1f), textAlign = TextAlign.Center,
+                fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1)
+            IconButton(onClick = { changeMonth(1) }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Mes siguiente", Modifier.size(20.dp))
             }
         }
 
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(top = 1.dp, bottom = 4.dp)
-        ) {
+        Row(Modifier.fillMaxWidth().height(22.dp)) {
             WEEK_DAYS.forEach { label ->
-                Box(
-                    Modifier.weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        label,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp
-                    )
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                    Text(label, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
             }
         }
 
-        // Las 42 celdas son componentes muy pequeños y sin estado propio.
-        // Solo reciben los datos ya preparados por el ViewModel.
-        Column(
+        Box(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(14.dp))
-        ) {
-            repeat(6) { row ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(45.dp)
-                ) {
-                    repeat(7) { column ->
-                        val index = row * 7 + column
-                        val day = days[index]
-                        MonthDayCell(
-                            day = day,
-                            currentMonth = month,
-                            selected = day == date,
-                            dots = eventDotsByDate[day].orEmpty(),
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                onDate(day)
+                .height(270.dp)
+                .pointerInput(month) {
+                    awaitPointerEventScope {
+                        var downX = 0f
+                        var downY = 0f
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: continue
+                            if (change.pressed && !change.previousPressed) {
+                                downX = change.position.x
+                                downY = change.position.y
+                                moved = false
                             }
-                        )
+                            if (change.pressed &&
+                                (kotlin.math.abs(change.position.x - downX) > 24f ||
+                                 kotlin.math.abs(change.position.y - downY) > 24f)) {
+                                moved = true
+                            }
+                            if (!change.pressed && change.previousPressed) {
+                                val dx = change.position.x - downX
+                                val dy = change.position.y - downY
+                                if (kotlin.math.abs(dx) > 70f && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.25f) {
+                                    if (dx > 0f) changeMonth(-1) else changeMonth(1)
+                                } else if (!moved) {
+                                    val cellWidth = size.width / 7f
+                                    val cellHeight = size.height / 6f
+                                    val col = (change.position.x / cellWidth).toInt().coerceIn(0, 6)
+                                    val row = (change.position.y / cellHeight).toInt().coerceIn(0, 5)
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onDate(days[row * 7 + col])
+                                }
+                                change.consume()
+                            }
+                        }
+                    }
+                }
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                repeat(6) { row ->
+                    Row(Modifier.fillMaxWidth().weight(1f)) {
+                        repeat(7) { column ->
+                            val day = days[row * 7 + column]
+                            val selected = day == date
+                            val outside = day.month != month.month
+                            val dots = eventDotsByDate[day].orEmpty()
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .padding(1.dp)
+                                    .clip(RoundedCornerShape(11.dp))
+                                    .background(if (selected) scheme.primaryContainer else Color.Transparent),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(day.dayOfMonth.toString(),
+                                        color = when {
+                                            selected -> scheme.onPrimaryContainer
+                                            outside -> scheme.outline
+                                            else -> scheme.onSurface
+                                        },
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 13.sp, maxLines = 1)
+                                    Row(Modifier.height(7.dp), horizontalArrangement = Arrangement.Center) {
+                                        dots.take(3).forEach { color ->
+                                            Box(Modifier.padding(horizontal = 1.dp).size(4.dp)
+                                                .clip(CircleShape).background(Color(color)))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
 
         Spacer(Modifier.height(7.dp))
-        Text(
-            "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
+        Text("${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
+            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(5.dp))
         EventList(eventsByDate[date].orEmpty(), onEvent)
-    }
-}
-
-@Composable
-private fun RowScope.MonthDayCell(
-    day: LocalDate,
-    currentMonth: LocalDate,
-    selected: Boolean,
-    dots: List<Int>,
-    onClick: () -> Unit
-) {
-    val scheme = MaterialTheme.colorScheme
-    val outsideMonth = day.month != currentMonth.month
-
-    Box(
-        Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .padding(1.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .background(
-                if (selected) scheme.primaryContainer else Color.Transparent
-            )
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = day.dayOfMonth.toString(),
-                color = when {
-                    selected -> scheme.onPrimaryContainer
-                    outsideMonth -> scheme.outline
-                    else -> scheme.onSurface
-                },
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                fontSize = 13.sp,
-                maxLines = 1
-            )
-
-            Row(
-                Modifier.height(7.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                dots.take(3).forEach { color ->
-                    Box(
-                        Modifier
-                            .padding(horizontal = 1.dp)
-                            .size(4.dp)
-                            .clip(CircleShape)
-                            .background(Color(color))
-                    )
-                }
-            }
-        }
     }
 }
 
