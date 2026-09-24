@@ -21,7 +21,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -44,16 +43,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -335,36 +328,19 @@ fun CalendarScreen(vm: CalendarViewModel) {
                 }) { Icon(Icons.Rounded.Sync, "Sincronizar") }
             }
             Spacer(Modifier.height(10.dp))
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                MonthView(
-                    date = date,
-                    eventsByDate = vm.eventsByDate,
-                    eventDotsByDate = vm.eventDotsByDate,
-                    onDate = {
-                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        date = it
-                        vm.ensureRange(it)
-                    },
-                    onEvent = { editing = it; showCreator = true },
-                    visible = view == CalendarView.MONTH
-                )
-
-                if (view != CalendarView.MONTH) {
-                    ViewSwitcher(
-                        view = view,
-                        date = date,
-                        onDate = {
-                            haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            date = it
-                            vm.ensureRange(it)
-                        },
-                        events = vm.events,
-                        eventsByDate = vm.eventsByDate,
-                        eventDotsByDate = vm.eventDotsByDate,
-                        onEvent = { editing = it; showCreator = true }
-                    )
-                }
-            }
+            ViewSwitcher(
+                view = view,
+                date = date,
+                onDate = {
+                    haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    date = it
+                    vm.ensureRange(it)
+                },
+                events = vm.events,
+                eventsByDate = vm.eventsByDate,
+                eventDotsByDate = vm.eventDotsByDate,
+                onEvent = { editing = it; showCreator = true }
+            )
         }
     }
 
@@ -442,14 +418,13 @@ fun MonthView(
     eventsByDate: Map<LocalDate, List<CalendarEvent>>,
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onDate: (LocalDate) -> Unit,
-    onEvent: (CalendarEvent) -> Unit,
-    visible: Boolean = true
+    onEvent: (CalendarEvent) -> Unit
 ) {
     var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
     val view = LocalView.current
     val scheme = MaterialTheme.colorScheme
-    val textMeasurer = rememberTextMeasurer()
 
+    // El mes se calcula una sola vez por cambio de mes. No hay Canvas ni LazyGrid.
     val days = remember(month) {
         val first = month.withDayOfMonth(1)
         val leading = first.dayOfWeek.value - 1
@@ -472,11 +447,7 @@ fun MonthView(
         onDate(next)
     }
 
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .graphicsLayer { alpha = if (visible) 1f else 0f }
-    ) {
+    Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().height(44.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -508,104 +479,26 @@ fun MonthView(
             }
         }
 
-        Canvas(
-            Modifier
-                .fillMaxWidth()
-                .height(270.dp)
-                .pointerInput(month, days, date, eventDotsByDate) {
-                    detectTapGestures { position ->
-                        val cellWidth = size.width / 7f
-                        val cellHeight = size.height / 6f
-                        val col = (position.x / cellWidth).toInt().coerceIn(0, 6)
-                        val row = (position.y / cellHeight).toInt().coerceIn(0, 5)
-                        val index = row * 7 + col
-                        if (index in days.indices) {
-                            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            onDate(days[index])
-                        }
-                    }
-                }
-                .pointerInput(month) {
-                    var dragTotal = 0f
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { _, dragAmount ->
-                            dragTotal += dragAmount
-                        },
-                        onDragEnd = {
-                            when {
-                                dragTotal > 70f -> moveMonth(-1)
-                                dragTotal < -70f -> moveMonth(1)
+        Column(Modifier.fillMaxWidth()) {
+            repeat(6) { rowIndex ->
+                Row(Modifier.fillMaxWidth().height(45.dp)) {
+                    repeat(7) { colIndex ->
+                        val day = days[rowIndex * 7 + colIndex]
+                        MonthDayCell(
+                            day = day,
+                            month = month,
+                            selected = day == date,
+                            dots = eventDotsByDate[day].orEmpty(),
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                onDate(day)
                             }
-                            dragTotal = 0f
-                        },
-                        onDragCancel = { dragTotal = 0f }
-                    )
-                }
-        ) {
-            val cellWidth = size.width / 7f
-            val cellHeight = size.height / 6f
-            val textStyle = TextStyle(fontSize = 13.sp)
-            val selectedTextStyle = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold)
-
-            days.forEachIndexed { index, day ->
-                val row = index / 7
-                val col = index % 7
-                val left = col * cellWidth
-                val top = row * cellHeight
-                val centerX = left + cellWidth / 2f
-                val centerY = top + cellHeight / 2f
-                val selected = day == date
-                val outside = day.month != month.month
-
-                if (selected) {
-                    drawRoundRect(
-                        color = scheme.primaryContainer,
-                        topLeft = Offset(left + 1.dp.toPx(), top + 1.dp.toPx()),
-                        size = Size(cellWidth - 2.dp.toPx(), cellHeight - 2.dp.toPx()),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(11.dp.toPx())
-                    )
-                }
-
-                val dayText = day.dayOfMonth.toString()
-                val layout = textMeasurer.measure(
-                    dayText,
-                    if (selected) selectedTextStyle else textStyle
-                )
-                val textColor = when {
-                    selected -> scheme.onPrimaryContainer
-                    outside -> scheme.outline
-                    else -> scheme.onSurface
-                }
-                drawText(
-                    textLayoutResult = layout,
-                    color = textColor,
-                    topLeft = Offset(
-                        centerX - layout.size.width / 2f,
-                        top + 9.dp.toPx()
-                    )
-                )
-
-                val dots = eventDotsByDate[day].orEmpty().take(3)
-                if (dots.isNotEmpty()) {
-                    val dotY = top + cellHeight - 10.dp.toPx()
-                    val spacing = 6.dp.toPx()
-                    val totalWidth = (dots.size - 1) * spacing
-                    dots.forEachIndexed { dotIndex, colorInt ->
-                        drawCircle(
-                            color = Color(colorInt),
-                            radius = 2.dp.toPx(),
-                            center = Offset(
-                                centerX - totalWidth / 2f + dotIndex * spacing,
-                                dotY
-                            )
                         )
                     }
                 }
             }
         }
 
-        // Horizontal swipe is deliberately kept outside the drawing code so the
-        // canvas itself remains a simple, cheap renderer.
         Spacer(Modifier.height(7.dp))
         Text(
             "${date.dayOfWeek.getDisplayName(DateTextStyle.FULL, esLocale).replaceFirstChar { it.uppercase(esLocale) }} ${date.dayOfMonth}",
@@ -616,6 +509,67 @@ fun MonthView(
         EventList(eventsByDate[date].orEmpty(), onEvent)
     }
 }
+
+@Composable
+private fun RowScope.MonthDayCell(
+    day: LocalDate,
+    month: LocalDate,
+    selected: Boolean,
+    dots: List<Int>,
+    onClick: () -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    val outside = day.month != month.month
+
+    Box(
+        Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .padding(1.dp)
+            .clip(RoundedCornerShape(11.dp))
+            .background(if (selected) scheme.primaryContainer else Color.Transparent)
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                day.dayOfMonth.toString(),
+                color = when {
+                    selected -> scheme.onPrimaryContainer
+                    outside -> scheme.outline
+                    else -> scheme.onSurface
+                },
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 13.sp,
+                maxLines = 1
+            )
+            if (dots.isNotEmpty()) {
+                Row(
+                    Modifier.height(7.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    dots.take(3).forEach { color ->
+                        Box(
+                            Modifier
+                                .padding(horizontal = 1.dp)
+                                .size(4.dp)
+                                .clip(CircleShape)
+                                .background(Color(color))
+                        )
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(7.dp))
+            }
+        }
+    }
+}
+
+private val WEEK_DAYS = listOf("L", "M", "X", "J", "V", "S", "D")
 
 @Composable
 fun WeekView(
