@@ -28,6 +28,9 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -328,32 +331,38 @@ fun CalendarScreen(vm: CalendarViewModel) {
                 }) { Icon(Icons.Rounded.Sync, "Sincronizar") }
             }
             Spacer(Modifier.height(10.dp))
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                MonthView(
-                    date = date,
-                    eventsByDate = vm.eventsByDate,
-                    eventDotsByDate = vm.eventDotsByDate,
-                    onDate = {
-                        haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                        date = it
-                        vm.ensureRange(it)
-                    },
-                    onEvent = { editing = it; showCreator = true },
-                    visible = view == CalendarView.MONTH
-                )
 
-                if (view != CalendarView.MONTH) {
-                    ViewSwitcher(
-                        view = view,
+            // Igual que la Agenda: una sola vista está activa.
+            // No mantenemos Mes oculto ni dos árboles de Compose a la vez.
+            // Esto evita trabajo de medida/layout al cambiar de pestaña.
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                when (view) {
+                    CalendarView.MONTH -> MonthView(
                         date = date,
+                        eventsByDate = vm.eventsByDate,
+                        eventDotsByDate = vm.eventDotsByDate,
                         onDate = {
                             haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                             date = it
                             vm.ensureRange(it)
                         },
-                        events = vm.events,
-                        eventsByDate = vm.eventsByDate,
-                        eventDotsByDate = vm.eventDotsByDate,
+                        onEvent = { editing = it; showCreator = true }
+                    )
+                    CalendarView.WEEK -> WeekView(
+                        date, vm.eventsByDate,
+                        onDate = {
+                            haptic.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            date = it
+                            vm.ensureRange(it)
+                        },
+                        onEvent = { editing = it; showCreator = true }
+                    )
+                    CalendarView.DAY -> DayView(
+                        date, vm.eventsByDate,
+                        onEvent = { editing = it; showCreator = true }
+                    )
+                    CalendarView.AGENDA -> AgendaView(
+                        date, vm.events,
                         onEvent = { editing = it; showCreator = true }
                     )
                 }
@@ -418,16 +427,11 @@ fun ViewSwitcher(
 }
 
 /**
- * Performance-critical month view.
+ * Mes optimizado siguiendo la misma estructura que el calendario de la Agenda:
+ * LazyVerticalGrid, datos precalculados y una sola vista activa.
  *
- * The previous implementation created 42 Compose subtrees containing Column,
- * Text, Row, Box, clip and clickable modifiers. That is unnecessary for a
- * fixed calendar grid and can become expensive when the selected date and the
- * event maps change together.
- *
- * This version renders the entire 42-cell grid with ONE Canvas. The only
- * Compose work per frame is drawing primitives and text. Event lookup remains
- * O(1) through the ViewModel's prebuilt map.
+ * La cuadrícula solo contiene las celdas necesarias y evita crear seis filas
+ * manuales con 42 subárboles completos.
  */
 @Composable
 fun MonthView(
@@ -435,19 +439,25 @@ fun MonthView(
     eventsByDate: Map<LocalDate, List<CalendarEvent>>,
     eventDotsByDate: Map<LocalDate, List<Int>>,
     onDate: (LocalDate) -> Unit,
-    onEvent: (CalendarEvent) -> Unit,
-    visible: Boolean = true
+    onEvent: (CalendarEvent) -> Unit
 ) {
-    var month by remember(date.year, date.month) { mutableStateOf(date.withDayOfMonth(1)) }
+    var month by remember(date.year, date.month) {
+        mutableStateOf(date.withDayOfMonth(1))
+    }
     val view = LocalView.current
     val scheme = MaterialTheme.colorScheme
 
+    val offset = remember(month) {
+        month.dayOfWeek.value - 1
+    }
     val days = remember(month) {
-        val first = month.withDayOfMonth(1)
-        val leading = first.dayOfWeek.value - 1
-        buildList(42) {
-            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
-            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
+        buildList {
+            repeat(offset) { index ->
+                add(month.minusDays((offset - index).toLong()))
+            }
+            for (day in 1..month.lengthOfMonth()) {
+                add(month.withDayOfMonth(day))
+            }
             while (size < 42) add(last().plusDays(1))
         }
     }
@@ -467,25 +477,21 @@ fun MonthView(
     Column(
         Modifier
             .fillMaxWidth()
-            .graphicsLayer { alpha = if (visible) 1f else 0f }
-            .then(
-                if (visible) Modifier.pointerInput(Unit) {
-                    var dragTotal = 0f
-                    detectHorizontalDragGestures(
-                        onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                        onDragEnd = {
-                            when {
-                                dragTotal > 70f -> moveMonth(-1)
-                                dragTotal < -70f -> moveMonth(1)
-                            }
-                            dragTotal = 0f
-                        },
-                        onDragCancel = { dragTotal = 0f }
-                    )
-                } else Modifier
-            )
+            .pointerInput(Unit) {
+                var dragTotal = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                    onDragEnd = {
+                        when {
+                            dragTotal > 70f -> moveMonth(-1)
+                            dragTotal < -70f -> moveMonth(1)
+                        }
+                        dragTotal = 0f
+                    },
+                    onDragCancel = { dragTotal = 0f }
+                )
+            }
     ) {
-        // Lightweight month header: no AnimatedContent and no recomposition-heavy effects.
         Row(
             Modifier.fillMaxWidth().height(44.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -507,33 +513,83 @@ fun MonthView(
         }
 
         Row(
-            Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
+            Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 4.dp)
         ) {
             WEEK_DAYS.forEach { dayName ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    Text(dayName, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                }
+                Text(
+                    dayName,
+                    Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    color = scheme.onSurfaceVariant,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp
+                )
             }
         }
 
-        // The grid is split into small stable cells so changing the selected day
-        // does not force the entire 42-cell subtree to redraw.
-        Column(Modifier.fillMaxWidth()) {
-            repeat(6) { rowIndex ->
-                Row(Modifier.fillMaxWidth().height(45.dp)) {
-                    repeat(7) { colIndex ->
-                        val day = days[rowIndex * 7 + colIndex]
-                        MonthDayCell(
-                            day = day,
-                            month = month,
-                            selected = day == date,
-                            dots = eventDotsByDate[day].orEmpty(),
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                onDate(day)
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(7),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(270.dp),
+            userScrollEnabled = false,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            items(
+                items = days,
+                key = { it.toEpochDay() }
+            ) { day ->
+                val selected = day == date
+                val outside = day.month != month.month
+                val dots = eventDotsByDate[day].orEmpty()
+
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(43.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(1.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(if (selected) scheme.primaryContainer else Color.Transparent)
+                            .clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                                onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onDate(day)
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                day.dayOfMonth.toString(),
+                                color = when {
+                                    selected -> scheme.onPrimaryContainer
+                                    outside -> scheme.outline
+                                    else -> scheme.onSurface
+                                },
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                fontSize = 13.sp,
+                                maxLines = 1
+                            )
+                            Row(Modifier.height(6.dp), horizontalArrangement = Arrangement.Center) {
+                                dots.take(3).forEach { color ->
+                                    Box(
+                                        Modifier
+                                            .padding(horizontal = 1.dp)
+                                            .size(4.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(color))
+                                    )
+                                }
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -547,65 +603,6 @@ fun MonthView(
         )
         Spacer(Modifier.height(5.dp))
         EventList(eventsByDate[date].orEmpty(), onEvent)
-    }
-}
-
-@Composable
-private fun RowScope.MonthDayCell(
-    day: LocalDate,
-    month: LocalDate,
-    selected: Boolean,
-    dots: List<Int>,
-    onClick: () -> Unit
-) {
-    val scheme = MaterialTheme.colorScheme
-    val outside = day.month != month.month
-
-    Box(
-        Modifier
-            .weight(1f)
-            .fillMaxHeight()
-            .padding(1.dp)
-            .clip(RoundedCornerShape(11.dp))
-            .background(if (selected) scheme.primaryContainer else Color.Transparent)
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-                onClick = onClick
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                day.dayOfMonth.toString(),
-                color = when {
-                    selected -> scheme.onPrimaryContainer
-                    outside -> scheme.outline
-                    else -> scheme.onSurface
-                },
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                fontSize = 13.sp,
-                maxLines = 1
-            )
-            if (dots.isNotEmpty()) {
-                Row(
-                    Modifier.height(7.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    dots.take(3).forEach { color ->
-                        Box(
-                            Modifier
-                                .padding(horizontal = 1.dp)
-                                .size(4.dp)
-                                .clip(CircleShape)
-                                .background(Color(color))
-                        )
-                    }
-                }
-            } else {
-                Spacer(Modifier.height(7.dp))
-            }
-        }
     }
 }
 
