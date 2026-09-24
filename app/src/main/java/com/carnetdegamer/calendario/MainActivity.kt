@@ -4,8 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.HapticFeedbackConstants
-import android.graphics.Paint
-import android.graphics.Typeface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,15 +15,13 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
@@ -47,8 +43,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -406,12 +400,16 @@ fun ViewSwitcher(
 }
 
 /**
- * Performance-oriented month view.
+ * Performance-critical month view.
  *
- * The grid itself is drawn on one Canvas, so changing the selected date or
- * month does not cause 42 individual Compose cell subtrees to be measured and
- * recomposed. The month transition animates two lightweight Canvas states,
- * keeping the visual movement smooth without duplicating a full Compose grid.
+ * The previous implementation created 42 Compose subtrees containing Column,
+ * Text, Row, Box, clip and clickable modifiers. That is unnecessary for a
+ * fixed calendar grid and can become expensive when the selected date and the
+ * event maps change together.
+ *
+ * This version renders the entire 42-cell grid with ONE Canvas. The only
+ * Compose work per frame is drawing primitives and text. Event lookup remains
+ * O(1) through the ViewModel's prebuilt map.
  */
 @Composable
 fun MonthView(
@@ -425,6 +423,16 @@ fun MonthView(
     val view = LocalView.current
     val scheme = MaterialTheme.colorScheme
 
+    val days = remember(month) {
+        val first = month.withDayOfMonth(1)
+        val leading = first.dayOfWeek.value - 1
+        buildList(42) {
+            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
+            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
+            while (size < 42) add(last().plusDays(1))
+        }
+    }
+
     val monthTitle = remember(month) {
         month.month.getDisplayName(DateTextStyle.FULL, esLocale)
             .replaceFirstChar { it.uppercase(esLocale) } + " ${month.year}"
@@ -437,7 +445,25 @@ fun MonthView(
         onDate(next)
     }
 
-    Column(Modifier.fillMaxWidth()) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                var dragTotal = 0f
+                detectHorizontalDragGestures(
+                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
+                    onDragEnd = {
+                        when {
+                            dragTotal > 70f -> moveMonth(-1)
+                            dragTotal < -70f -> moveMonth(1)
+                        }
+                        dragTotal = 0f
+                    },
+                    onDragCancel = { dragTotal = 0f }
+                )
+            }
+    ) {
+        // Lightweight month header: no AnimatedContent and no recomposition-heavy effects.
         Row(
             Modifier.fillMaxWidth().height(44.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -464,50 +490,70 @@ fun MonthView(
         ) {
             WEEK_DAYS.forEach { dayName ->
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    Text(
-                        dayName,
-                        color = scheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp
-                    )
+                    Text(dayName, color = scheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
                 }
             }
         }
 
-        AnimatedContent(
-            targetState = month,
-            transitionSpec = {
-                val forward = targetState.isAfter(initialState)
-                if (forward) {
-                    (slideInHorizontally(
-                        animationSpec = tween(240, easing = FastOutSlowInEasing),
-                        initialOffsetX = { full -> full / 3 }
-                    ) + fadeIn(tween(180))) togetherWith
-                        (slideOutHorizontally(
-                            animationSpec = tween(190, easing = FastOutSlowInEasing),
-                            targetOffsetX = { full -> -full / 4 }
-                        ) + fadeOut(tween(140)))
-                } else {
-                    (slideInHorizontally(
-                        animationSpec = tween(240, easing = FastOutSlowInEasing),
-                        initialOffsetX = { full -> -full / 3 }
-                    ) + fadeIn(tween(180))) togetherWith
-                        (slideOutHorizontally(
-                            animationSpec = tween(190, easing = FastOutSlowInEasing),
-                            targetOffsetX = { full -> full / 4 }
-                        ) + fadeOut(tween(140)))
+        // Exactly 42 cells, but each cell is deliberately flat: one Box + one Text
+        // and at most three tiny dots. No Canvas, LazyGrid, nested Column or animation.
+        Column(Modifier.fillMaxWidth()) {
+            repeat(6) { rowIndex ->
+                Row(Modifier.fillMaxWidth().height(45.dp)) {
+                    repeat(7) { colIndex ->
+                        val day = days[rowIndex * 7 + colIndex]
+                        val selected = day == date
+                        val dots = eventDotsByDate[day].orEmpty()
+                        val outside = day.month != month.month
+
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .padding(1.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(if (selected) scheme.primaryContainer else Color.Transparent)
+                                .clickable {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                    onDate(day)
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    day.dayOfMonth.toString(),
+                                    color = when {
+                                        selected -> scheme.onPrimaryContainer
+                                        outside -> scheme.outline
+                                        else -> scheme.onSurface
+                                    },
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 13.sp,
+                                    maxLines = 1
+                                )
+                                if (dots.isNotEmpty()) {
+                                    Row(
+                                        Modifier.height(7.dp),
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        dots.take(3).forEach { color ->
+                                            Box(
+                                                Modifier
+                                                    .padding(horizontal = 1.dp)
+                                                    .size(4.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(color))
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    Spacer(Modifier.height(7.dp))
+                                }
+                            }
+                        }
+                    }
                 }
-            },
-            label = "month_grid_transition"
-        ) { animatedMonth ->
-            MonthGridCanvas(
-                month = animatedMonth,
-                selectedDate = date,
-                eventsByDate = eventsByDate,
-                eventDotsByDate = eventDotsByDate,
-                onDate = onDate,
-                onEvent = onEvent
-            )
+            }
         }
 
         Spacer(Modifier.height(7.dp))
@@ -518,135 +564,6 @@ fun MonthView(
         )
         Spacer(Modifier.height(5.dp))
         EventList(eventsByDate[date].orEmpty(), onEvent)
-    }
-}
-
-@Composable
-private fun MonthGridCanvas(
-    month: LocalDate,
-    selectedDate: LocalDate,
-    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
-    eventDotsByDate: Map<LocalDate, List<Int>>,
-    onDate: (LocalDate) -> Unit,
-    onEvent: (CalendarEvent) -> Unit
-) {
-    val scheme = MaterialTheme.colorScheme
-    val view = LocalView.current
-
-    val days = remember(month) {
-        val first = month.withDayOfMonth(1)
-        val leading = first.dayOfWeek.value - 1
-        buildList(42) {
-            repeat(leading) { i -> add(first.minusDays((leading - i).toLong())) }
-            for (d in 1..month.lengthOfMonth()) add(month.withDayOfMonth(d))
-            while (size < 42) add(last().plusDays(1))
-        }
-    }
-
-    Canvas(
-        Modifier
-            .fillMaxWidth()
-            .height(270.dp)
-            .pointerInput(month, selectedDate, eventsByDate) {
-                androidx.compose.foundation.gestures.detectTapGestures { offset ->
-                    val cellWidth = size.width / 7f
-                    val cellHeight = size.height / 6f
-                    val col = (offset.x / cellWidth).toInt().coerceIn(0, 6)
-                    val row = (offset.y / cellHeight).toInt().coerceIn(0, 5)
-                    val day = days[row * 7 + col]
-                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    onDate(day)
-                }
-            }
-            .pointerInput(Unit) {
-                var dragTotal = 0f
-                detectHorizontalDragGestures(
-                    onHorizontalDrag = { _, dragAmount -> dragTotal += dragAmount },
-                    onDragEnd = {
-                        when {
-                            dragTotal > 70f -> {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                onDate(month.minusMonths(1))
-                            }
-                            dragTotal < -70f -> {
-                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                                onDate(month.plusMonths(1))
-                            }
-                        }
-                        dragTotal = 0f
-                    },
-                    onDragCancel = { dragTotal = 0f }
-                )
-            }
-    ) {
-        val cellWidth = size.width / 7f
-        val cellHeight = size.height / 6f
-        val selectedColor = scheme.primaryContainer
-        val selectedTextColor = scheme.onPrimaryContainer
-        val normalTextColor = scheme.onSurface
-        val outsideTextColor = scheme.outline
-
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-            textSize = 13.sp.toPx()
-        }
-        val selectedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            textSize = 13.sp.toPx()
-        }
-        val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-        days.forEachIndexed { index, day ->
-            val row = index / 7
-            val col = index % 7
-            val left = col * cellWidth
-            val top = row * cellHeight
-            val centerX = left + cellWidth / 2f
-            val centerY = top + cellHeight / 2f
-            val selected = day == selectedDate
-            val outside = day.month != month.month
-
-            if (selected) {
-                drawRoundRect(
-                    color = selectedColor,
-                    topLeft = androidx.compose.ui.geometry.Offset(left + 1.dp.toPx(), top + 1.dp.toPx()),
-                    size = androidx.compose.ui.geometry.Size(cellWidth - 2.dp.toPx(), cellHeight - 2.dp.toPx()),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(11.dp.toPx())
-                )
-            }
-
-            textPaint.color = when {
-                outside -> outsideTextColor.toArgb()
-                else -> normalTextColor.toArgb()
-            }
-            selectedPaint.color = selectedTextColor.toArgb()
-            val baseline = centerY - (textPaint.ascent() + textPaint.descent()) / 2f - 2.dp.toPx()
-            drawIntoCanvas { canvas ->
-                canvas.nativeCanvas.drawText(
-                    day.dayOfMonth.toString(),
-                    centerX,
-                    baseline,
-                    if (selected) selectedPaint else textPaint
-                )
-            }
-
-            val dots = eventDotsByDate[day].orEmpty().take(3)
-            if (dots.isNotEmpty()) {
-                val dotY = top + cellHeight - 9.dp.toPx()
-                val spacing = 6.dp.toPx()
-                val startX = centerX - ((dots.size - 1) * spacing) / 2f
-                dots.forEachIndexed { dotIndex, colorInt ->
-                    dotPaint.color = colorInt
-                    drawCircle(
-                        color = Color(colorInt),
-                        radius = 2.dp.toPx(),
-                        center = androidx.compose.ui.geometry.Offset(startX + dotIndex * spacing, dotY)
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -837,7 +754,6 @@ fun timeText(millis: Long) = Instant.ofEpochMilli(millis)
 @Composable
 fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
     val haptic = LocalView.current
-
     Box(
         Modifier
             .fillMaxWidth()
@@ -854,22 +770,10 @@ fun FloatingBottomBar(view: CalendarView, onView: (CalendarView) -> Unit) {
                 .padding(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.DAY)
-            }
-            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.AGENDA)
-            }
-            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.MONTH)
-            }
-            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) {
-                haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                onView(CalendarView.WEEK)
-            }
+            NavItem("Hoy", Icons.Rounded.Today, view == CalendarView.DAY) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.DAY) }
+            NavItem("Agenda", Icons.Rounded.ViewAgenda, view == CalendarView.AGENDA) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.AGENDA) }
+            NavItem("Mes", Icons.Rounded.CalendarMonth, view == CalendarView.MONTH) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.MONTH) }
+            NavItem("Semana", Icons.Rounded.ViewWeek, view == CalendarView.WEEK) { haptic.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK); onView(CalendarView.WEEK) }
         }
     }
 }
@@ -881,11 +785,21 @@ fun RowScope.NavItem(
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    // Stable layout: the four tabs keep the same width. Only their content
-    // changes, so switching tabs does not force the whole Row to remeasure.
+    // The selected item gets a little more room so long labels such as
+    // "Semana" never get clipped. Both the old and new item animate their
+    // width, making the selected capsule slide smoothly between tabs.
+    val animatedWeight by animateFloatAsState(
+        targetValue = if (selected) 1.35f else 0.8833f,
+        animationSpec = spring(
+            dampingRatio = 0.82f,
+            stiffness = 700f
+        ),
+        label = "nav_weight_$label"
+    )
+
     Box(
         Modifier
-            .weight(1f)
+            .weight(animatedWeight)
             .fillMaxHeight()
             .clip(RoundedCornerShape(30.dp))
             .clickable(onClick = onClick),
@@ -894,14 +808,8 @@ fun RowScope.NavItem(
         AnimatedContent(
             targetState = selected,
             transitionSpec = {
-                (fadeIn(tween(140)) + scaleIn(
-                    tween(180),
-                    initialScale = 0.92f
-                )) togetherWith
-                    (fadeOut(tween(100)) + scaleOut(
-                        tween(120),
-                        targetScale = 0.92f
-                    ))
+                (fadeIn(tween(130)) + scaleIn(tween(160), initialScale = 0.92f)) togetherWith
+                    (fadeOut(tween(90)) + scaleOut(tween(110), targetScale = 0.92f))
             },
             label = "nav_content_$label"
         ) { isSelected ->
